@@ -1,0 +1,1728 @@
+About
+info-beamer.com exposes most of its functionality through an HTTP REST API. You can use this API to, for example, change setup configuration values, assign setups to devices or more. You can even build your own digital signage frontend and use the solid foundation of info-beamer hosted to manage your devices.
+
+Note that this is the documentation for the info-beamer.com API. Take a look at the info-beamer Lua API documentation if you're interested in writing your own Lua code for the info-beamer player software itself.
+
+Intro
+All examples in this documentation use curl syntax together with the tool jq. Most programming languages should have easy to use http client libraries and you should be able send your requests with them easily. Get in contact if you need help.
+
+The info-beamer API base url is
+
+https://info-beamer.com/api/v1/
+As you can see the API is versioned. Right now there is only v1 active. Changes to this version won't introduce any breaking changes. But additional information might get included in responses. So your client library should at least be able to ignore those (see also).
+
+Endpoints that change the state of any info-beamer object require a POST or DELETE requests. Some endpoints merely query data so they use GET requests. Content for POST requests is given in application/x-www-form-urlencoded or multipart/form-data encoded format.
+
+Authentication
+Most API calls require authentication. There are three different methods of authentication:
+
+You can use one of your API keys. Each access in you account provides an API key that is restricted according to the attached ACL.
+You can use the sessions API calls or use OAuth to create a new sessions. You'll get a new temporary API key that can issue API calls on behalf of an access.
+adhoc API keys are programmatically created API keys with an very limited life time, usage count and optionally an added policy. They are intended to be handed directly to a user to issue requests on behalf of an access while not exposing the API key directly.
+Regardless of which method you use, you can send the API key as the password of a basic auth request. You must leave the username empty. If your http client for any reason doesn't support empty usernames, you can also use "api" instead.
+
+In curl this might look like this:
+
+curl -u :$API_KEY https://info-beamer.com/api/v1/ping | jq .
+You can also use the Bearer authentication by sending an Authentication request header like this:
+
+Authorization: Bearer ${API_KEY}
+with API_KEY being your API key. Alternatively you can also use the api-key url parameter for authentication but this is usually not recommended as url parameters end up in the browser history. You should only use this option for API keys with very limited permissions, for example when issuing check calls from a monitoring system.
+
+Insecure access
+You must always use encrypted connections when using the API. Be sure to prefix your API requests with https. Do not use http as that's insecure and will leak your access key to anyone able to monitor your network connection.
+
+info-beamer will detect insecure API usage and instantly marks the API key as compromised (See the compromised boolean within the list of shares). API keys marked as compromised will still work when accessing your own account but will no longer work when accessing other accounts shared with you.
+
+It is highly recommended that you renew the API key before trying to use the API again.
+
+Stability
+Our goal with the API is to provide a stable and long lasting environment for you to work with. We'll do our best to avoid the constant update cycle and needless busywork other APIs might require from you. Once you build an integration with our API, you can be sure that you won't have to update it for a long time, if ever. If we're ever forced to retire an endpoint, we'll let you know at least one year in advance.
+
+We might add new API endpoints and add new fields to existing responses, but won't remove any field without prior notice and will get in contact with you to see how to handle that.
+
+Note that undocumented fields within API responses should be considered to be unreliable as they might change at any time and we cannot make any promises about them. This might happen while we slowly roll out a new work-in-progress feature. Only rely on documented fields. When in doubt, please get in contact.
+
+The same policy applies to undocumented API endpoints. The info-beamer dashboard uses the same API documented here and some features might be available as a preview to a subset of users. While such a preview is in progress, the API for such a new feature might still change in backwards incompatible ways. Once a feature is considered stable and reliable, documentation will be added. Only then rely on such endpoints.
+
+Quotas
+Some resources (like devices, setups, packages or assets) have a quota attached to them. This means that you can only create a limited total number of them. Once you reach this number, trying to create another object will result in an error when calling the API. You can query your account quotas using the 'Get account information' API call. It returns all quotas with their current value and limit.
+
+The default quotas are sufficient for 99% of info-beamer's use cases and prevent runaway API usage that might have impact on other customers. In exceptional circumstances we might raise the quota. Please contact support with a description why you need more than the defaults.
+
+Rate Limits
+The info-beamer API is subject to rate limits. Each account has a sustained limit of a total of 300 calls/minute (that's 5/s) across all API endpoints:
+
+Rate limited: You can trigger API action global at a sustained rate of 300 actions per minute (that's a rate of 5.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Exceeding this global limit will immediately return a HTTP status 429 response. See below. Additionally individual endpoints are subject to dedicated rate limits. All limits are implemented as a leaky bucket algorithm with a possible burst factor of 200%.
+
+Here's an example of an endpoint with a 20 requests/minute limit: There is a virtual "bucket" that has space for 40 drops, that is 200% of 20. Each API calls fills the bucket with one drop. Once the bucket is full, a 429 response is returned and the API call denied. At a constant rate of 20 drops per minute the bucket slowly leaks, opening up space for more API calls. Essentially this means such an endpoint can be called at a sustained rate of 20 requests/minute. A sudden burst of API calls is permitted as long as the overall average doesn't exceed 20 requests/minute.
+
+Requests not exceeding the rate limit include the following HTTP response headers:
+
+X-Rate-Limit-Action	String	Information about the rate limit action in effect.
+X-Rate-Limit-Remaining	Integer value	How many immediate calls are guaranteed to be allowed.
+For requests exceeding the rate limit a 429 response is returned and the following headers are set and the request should be retried after a delay. The recommended delay is returned in the Retry-After response header value:
+
+X-Rate-Limited	true	The request was rate limited
+X-Rate-Limit-Action	String	Information about which action triggered the rate limiter
+Retry-After	Integer value	The recommended number of seconds to wait before retrying the request. Note that there is no guarantee that a request will succeed then. So you might run into rate limiting repeatedly.
+We closely monitor how the API is used and reserve the right to impose limits as we see fit. Both to prevent abuse as well as to prevents problems for other customers. Most use cases do not require excessive amounts of API calls. Please get in contact if you need hints on how to use the API.
+
+General hints are:
+
+Only call the API if you actually need to change anything.
+Use the userdata feature to add state to objects on the info-beamer side of the API that helps you decide if you need to make a call.
+Don't query individual devices/setups/assets in rapid succession if you can use a single /list call.
+Don't repeatedly call /list APIs unless you have a reason to assume that anything has actually changed between calls.
+Don't be lazy. A brute force approach might work for a few devices but won't scale as you might run into rate-limits later. Implement your system properly from the start.
+Testing rate limits
+It is highly recommended that you implement a retry logic for all API calls and transparently handle rate limited calls. Use the number of seconds returned in the Retry-After response header to delay repeated requests. You can use the following testing endpoints to verify your code. These endpoints share a 5 requests/60 seconds (or 10 request/60 seconds burst) rate and just return a dummy value response.
+
+GET https://info-beamer.com/api/v1/test/rate-limit
+POST https://info-beamer.com/api/v1/test/rate-limit
+DELETE https://info-beamer.com/api/v1/test/rate-limit
+Rate limited: You can trigger API action test:rate-limit at a sustained rate of 5 actions per minute (that's a rate of one call every 12 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Last-Modified support
+Currently the Setup detail/update and Playlist detail/update API calls return a Last-Modified response header and support conditional POST requests using the If-Unmodified-Since request header. If the modified object has been changed since the specified date, the request will fail with a 412 Precondition failed response and changes will not be applied.
+
+CORS
+You can use the info-beamer API within a browser from other origins using the CORS mechanism with the following restriction:
+
+You must issue those calls from a HTTPS origin. It's not possible to use insecure HTTP origins to query the API except when using localhost for development purposes. When deploying your JS based API client, use HTTPS.
+
+Insecure HTTP origins are not supported as anyone observing your HTTP traffic might tamper with your API calls or access the API key used for your calls.
+
+If you want to restrict API access based on the origin, you can create an ACL restricting access based on the request:origin:host request context.
+
+Responses
+200	The API call was successful. A JSON object is returned.
+400	There was a problem with your API call. You'll get a JSON response with the "error" field containing a textual representation of the error message.
+401	Failure to provide a correct API key results in an 401 response.
+403	Accessing an non-existing object or an object you have no permissions for results in an 403 response.
+412	The object to be modified has been changed after the date specified in the If-Unmodified-Since request header. See Last-Modified.
+429	The request has been rate limitied. You should implement an exponentially backoff algorithm to decide when to try the request again. See rate limits.
+5xx	The API isn't reachable at the moment.
+Devices
+You can fully manage a device lifecycle through the API. You can create devices, change their settings, query or reboot them and of course delete them. Devices can show a single setup at a time. Devices are represented by their device_id.
+
+Create a new device
+POST https://info-beamer.com/api/v1/device/create
+Permissions: Triggers action device:create with 3 request context variables available in addition to the default variables. Click to learn more..
+Quota: You can create a maximum total of 10000 devices. Adding more devices will result in an error. Learn more..
+Assign a device to an account. The PIN shown on the device welcome screen must be given.
+
+If there is a default setup selected for your account or you provide a setup id in the request parameters it will be automatically installed on the new device. Otherwise the device will stay on the welcome screen and wait until a setup is assigned later.
+
+Request parameters
+pin	String	The PIN of the device shown on the device welcome screen.
+location	Optional String	The initial device location.
+description	Optional String	The initial device description.
+timezone	Optional String	The initial device timezone.
+setup_id	Optional Integer	The id of a setup you want to assign to this device. The new device will immediately start downloading the content and switch to the assigned setup when everything is downloaded.
+Response
+.device_id	Integer	A numerical device id that represents the created device.
+Example
+curl -u :API_KEY https://info-beamer.com/api/v1/device/create -d "pin=12345678" | jq .
+List devices
+GET https://info-beamer.com/api/v1/device/list
+Permissions: Triggers action device:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action device:list at a sustained rate of 15 actions per minute (that's a rate of one call every 4 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Filters: The returned result can be filtered. Click to learn more..
+List devices assigned to an account.
+
+Response
+.devices[]	List of Device Objects.
+Device Object
+A Device Object is returned in both the devices list and the device details API call. A Device Object has the following format:
+
+.id	Integer	The numerical device id.
+.description	String	The device description as given on the Device page.
+.location	String	The device location as given on the Device page.
+.serial	String	The hardware serial number of the device.
+.status	String	An informal string showing what the device is doing at the moment.
+.is_online	Boolean	true if the device is online and has recently contacted the info-beamer hosted service.
+.is_synced	Boolean/Null	Is the device in sync with what is configured on info-beamer hosted?
+.is_suspended	Boolean	You can suspend a device to avoid paying for it. If the device is suspended it will show a black screen.
+.maintenance[]	List of Strings	If the device needs maintenance the problem is marked here. See Maintenance flags.
+.run	Run Object	Information about the current boot up cycle. This information is gathered when the device contacts the info-beamer hosted service. If there has not been any recent contact, this object might be empty.
+.userdata	Object	User supplied data assigned to this device. You can store any data for a device here.
+.reboot	Integer	The maintenance hour given in an offset from 0:00 in UTC time. The device might reboot in this hour if there is an important update.
+.geo	Object/Null	Geolocation information about this device. Can be null if the device hasn't been seen online yet or a device location isn't available.
+.geo.lat	Float	Specifies the device latitude if a geolocation is available.
+.geo.lon	Float	Specifies the device longitude if a geolocation is available.
+.geo.source	String	Specifies how the geolocation is generated. Can be either "wifi" if it's based on nearby WiFi networks or "ip" if it's based on the device last known public ip address. See also the device location call.
+.setup	Object/Null	If non-null, it contains information about the assigned setup. If there is no setup installed yet, this value is null.
+.setup.id	Integer	The id of the installed setup.
+.setup.name	String	The name of the installed setup.
+.setup.updated	Integer	Unix timestamp of when the setup was last changed. Changes include name changes, changing the configuration or setting new userdata.
+.hw	Optional object	Information about this hardware
+.hw.type	String	Hardware type, always 'pi' at the moment.
+.hw.model	String	Model name
+.hw.memory	Integer	Memory in MB
+.hw.platform	String	Platform code
+.hw.features	List of Strings	Lists the supported features.
+.offline	Object	Offline support status. Warning, these fields are still work in progress and might change.
+.offline.licensed	Boolean	Is this device hardware licensed for offline usage? This can either be using info-beamer hosted or using the info-beamer pi standalone software.
+.offline.plan	String	Active offline plan for this device.
+.offline.max_offline	Integer	Number of days offline before this device will turn blank.
+.offline.chargeable	Integer	Number of days offline before usage for this device is free.
+.upgrade.blocked	Integer	Number of days this device will not by subject to automated system upgrades.
+Maintenance Flags
+The maintenance list in a device object can contain multiple string. Each of them shows a detected problem of a device. Possible values are given in the following table. Additional flags might be added in the future.
+
+"sd-card"	There is some problem with the SD card (like corruption/removal)
+"network"	A network problem has been detected. Loss of connection, etc...
+"power-adapter"	There is a power problem. The attached power adapter might not provide enough power.
+"temperature"	Temperature problem. The device got too hot and was throttled.
+"reboot"	The device unexpectedly rebooted a number of times (at least 5) on a single day. This can hint at a power supply issue or other hardware related problems.
+"disconnected-display"	The device doesn't seem to have a display connected to its configured HDMI port. Its output probably ends up nowhere.
+Run Object
+Information about the device as gathered when the device contacts the info-beamer hosted service.
+
+.channel	String	The current active release channel.
+.public_addr	String	The public IP address of the device.
+.resolution	String	A textural representation of the screen resolution active when the device started.
+.restarted	Integer	The unix timestamp of the last device reboot.
+.tag	String	The major release version of the running operating system. Sortable.
+.version	String	The exact version of the running operating system. Sortable within its channel.
+.boot_version	String	The exact version of the running operating system. Sortable within its channel. Obsolete: use 'version' instead.
+.base_version	String	The exact version of the running operating system. Sortable within its channel. Obsolete: use 'version' instead.
+.pi_revision	String	The hardware revision of the Pi.
+Example
+curl -u :$API_KEY https://info-beamer.com/api/v1/device/list | jq .
+Device details
+GET https://info-beamer.com/api/v1/device/<device_id>
+Permissions: Triggers action device:detail with 4 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action device:detail at a sustained rate of 60 actions per minute (that's a rate of 1.0/s). Excessive calls will return a HTTP 429 response. Do not query individual devices if you need to query many of them. Use the /list call (potentially with a filter) instead. Learn more..
+Request information about an individual device.
+
+Response
+Returns a device object. The device_id is expected to be an Integer value. You can get those ids in the devices list request.
+
+Device telemetry
+GET https://info-beamer.com/api/v1/device/<device_id>/telemetry
+Permissions: Triggers action device:detail:telemetry with 4 request context variables available in addition to the default variables. Click to learn more..
+Request telemetry information about a device during the last 24 hours of the device being online.
+
+Response
+.telemetry	An object of multiple list values
+.telemetry.timestamps[]	A list of Integers (unix timestamps) for each sample taken.
+.telemetry.fps[]	A list of Floats with the measured frame rate at the sample point.
+.telemetry.load[]	A list of Floats with the measured system load at the sample point.
+.telemetry.mem[]	A list of Integers with the measured memory usage of the running visualization at the sample point.
+.telemetry.temp[]	A list of Floats with the measured CPU temperature of the Raspberry Pi.
+Device snapshot
+GET https://info-beamer.com/api/v1/device/<device_id>/output
+Permissions: Triggers action device:detail:output with 4 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action device:detail:output at a sustained rate of 20 actions per minute (that's a rate of one call every 3 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Request a screen capture of the device. This request might take a moment. The device_id is expected to be an Integer value. You can get those ids in the devices list request.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+Response
+.width	The screenshot width in pixels.
+.height	The screenshot height in pixels.
+.src	An url where the screenshot can be retrieved. The image will be provided in the JPEG format. Right now a data url is returned. In the future a temporary url might be returned instead. The given url will be valid for at most 5 minutes.
+Device sensor info
+GET https://info-beamer.com/api/v1/device/<device_id>/sensor
+Permissions: Triggers action device:detail:sensor with 4 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action device:detail:sensor at a sustained rate of 60 actions per minute (that's a rate of 1.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Requests various pieces of (realtime) information about a device. The device_id is expected to be an Integer value. You can get those ids in the devices list request.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+Response
+.boot.boot_id	String	A unique value that gets reset once the Pi is restarted.
+.boot.uptime	Integer	System uptime in seconds.
+.cpu.idle	Float	Current Idle %
+.disk	Object	Disk information.
+.disk.available	Integer	Available SD space in KB.
+.disk.used	Integer	Used disk space in KB.
+.disk.manfid	String	Manufacturer ID of the SD card.
+.disk.name	String	SD card name.
+.disk.oemid	String	OEM/Application ID of the SD card.
+.disk.io.read	Integer	Total number of read bytes.
+.disk.io.write	Integer	Total number of written bytes.
+.disk.io.session_writes	Integer	Number of KB written since last reboot.
+.info_beamer	Object	Information about the running info-beamer process
+.info_beamer.fps	Float	Current FPS
+.info_beamer.uptime	Integer	Current uptime of the info-beamer process
+.info_beamer.version	String	Currently running version of info-beamer pi
+.hwids.disk	Optional String	Storage device identifier.
+.hwids.pi	String	Pi identifier.
+.hwids.eth0	Optional String	MAC address of the Ethernet card, if available.
+.hwids.wlan0	Optional String	MAC address of the WiFi interface, if available.
+.net.data.received	Integer	Number of bytes received.
+.net.data.sent	Integer	Number of bytes sent.
+.net.dev	String	Either "wlan0" or "eth0" depending on whether wireless of an ethernet connection is used.
+.net.ip	String	Local IP address assigned to the device.
+.net.mac	String	MAC address of the network device.
+.net.gw.ip	String	IP address of the default gateway.
+.net.gw.mac	String	MAC address of the default gateway.
+.pi.gpu	Integer	Available GPU memory.
+.pi.arm	Integer	Available ARM/Linux memory.
+.pi.revision	String	The Pi hardware revision.
+.pi.version	String	The Pi firmware version.
+.p2p.enabled	Boolean	True if peer-to-peer is enabled.
+.p2p.peers	Integer	Number of detected peers (including this device)
+.p2p.nearby	List of Integers	Lists device ids of nearby devices.
+.p2p.time_spread	Float	Maximum time difference between all devices. A value of 0 means that all devices are in perfect sync. The lower the value the better.
+.p2p.traffic.cdn	Integer	Number of bytes downloaded from the info-beamer storage servers.
+.p2p.traffic.p2p	Integer	Number of bytes downloaded from other p2p enabled devices.
+.services.<service>	Object	Information about a service running on your device. package services always start with service followed by a dotted version of their node path. An example would be service.root for the package service of the top level node of the running setup. Installing a new version of a package service resets all its values.
+.services.<service>.io_read	Integer	Number of bytes read by this service.
+.services.<service>.io_write	Integer	Number of bytes written by this service.
+.services.<service>.mem_cache	Integer	Cached memory used by this service.
+.services.<service>.mem_rss	Integer	Memory (resident set size) used by this service.
+.ssh	Object	Information about the optionally running SSH daemon.
+.ssh.fingerprint	Optional String	If SSH is running this will contain the SSH public key in hex notation. Either MD5 or SHA1 fingerprint values will be returned.
+.temp	Float	The Pi CPU temperature.
+.time.peers	Integer	Number of configured/detected NTP peers.
+.time.synced	Boolean	If NTP considers itself correctly synced.
+.time.valid	Integer	Number of valid NTP peers that can be used for syncing.
+.uptime	Integer	Device uptime in seconds.
+.updater.updated	Boolean	Is system update available and the device is ready for a reboot to activate it?
+.updater.version	Optional String	If update is ready. Which version are we going to reboot into?
+.updater.channel	Optional String	If update is ready. Which channel are we going to reboot into?
+.video	Object	Information about current video mode
+.video.device	String	Name of connected display detected using EDID
+.video.hz	String	Refresh rate
+.video.resolution	String	Output resolution
+.video_secondary	Optional Object	Information about current video mode for a secondary display. See .video for values
+Device reboot
+POST https://info-beamer.com/api/v1/device/<device_id>/reboot
+Permissions: Triggers action device:reboot with 4 request context variables available in addition to the default variables. Click to learn more..
+Reboot a device. The device_id is expected to be an Integer value. You can get those ids in the devices list request.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+Response
+.ok	true	The request was successful and then device is going to reboot.
+Device location
+GET https://info-beamer.com/api/v1/device/<device_id>/location
+Permissions: Triggers action device:location:update with 4 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action device:location:update at a sustained rate of 5 actions per minute (that's a rate of one call every 12 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Try to get the device location based on WiFi and/or IP information. The device_id is expected to be an Integer value. You can get those ids in the devices list request.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+The lat and lon values are saved if a location could be detected and are available in the geo field in Device Objects returned by the device list or device detail calls.
+
+Response
+.lat	Float	Device latitude.
+.lon	Float	Device longitude.
+.address	String	Automatically detected address.
+POST https://info-beamer.com/api/v1/device/<device_id>/location
+Permissions: Triggers action device:location:update with 4 request context variables available in addition to the default variables. Click to learn more..
+The set lat and lon values are available in the geo field in Device Objects returned by the device list or device detail calls.
+
+Request parameters
+lat	Float	Manual latitude value
+lon	Float	Manual longitude value
+Response
+.ok	true	The request was successful. The provided lat and lon values have been assigned.
+DELETE https://info-beamer.com/api/v1/device/<device_id>/location
+Permissions: Triggers action device:location:delete with 4 request context variables available in addition to the default variables. Click to learn more..
+Removes a stored lat and lon device location previously generated from an earlier GET request.
+
+Response
+.ok	true	The request was successful. Existing lat and lon values stored have been removed.
+Device OS channel
+POST https://info-beamer.com/api/v1/device/<device_id>/channel
+Permissions: Triggers action device:switch-channel with 6 request context variables available in addition to the default variables. Click to learn more..
+Update a device to the latest OS release within a OS release channel. The device will download the requested OS version in the background, apply the update and finally reboot. The downtime is limited to the time it takes the device to reboot which is usually only 10 - 20 seconds.
+
+The normal A/B failsafe mechanism is used, so if the device doesn't reconnect back to the info-beamer service after 6 minutes, it will reboot again into the previous OS channel/version.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout for triggering the update. The updating itself might take longer as it depends on download speed and various other factors.
+
+If you want to just upgrade a device to the latest version within its current channel, use the config call below with an POST an empty configuration.
+
+Request parameters
+channel	String	Either stable, testing or bleeding
+mode	Optional String	Either reboot (the default) or defer. Decides how the device applies the update once installed. With reboot, the device reboots immediately. With defer the device will apply the update but it will not be active until the device is rebooted.
+Response
+.ok	true	The device is applying the OS channel assignment.
+Device config
+GET https://info-beamer.com/api/v1/device/<device_id>/config
+Permissions: Triggers action device:config:read with 4 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action device:config:read at a sustained rate of 30 actions per minute (that's a rate of one call every 2 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Fetches the current device configuration. That is: The content of the files set in the /config directory. See device configuration for details about files within /config and their content.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+This call returns information on all files in the /config directory. The returned dictionary contains all filenames mapped to their content. As files can in theory contain arbitrary binary content, all the values are base64 encoded. The content of files larger than 8K is not included in the response. Instead the file size (an integer value) of such files is returned instead of their content.
+
+Response
+.<filename>	String	base64 encoded content of <filename>
+POST https://info-beamer.com/api/v1/device/<device_id>/config
+Permissions: Triggers action device:config:write with 6 request context variables available in addition to the default variables. Click to learn more..
+Allows you to set a new configuration to a device. The device will install the most recent OS version in its channel (e.g. `stable`) and apply the given configuration. If you provide an empty configuration, the device's configuration will be untouched while the device is upgraded to the lastest OS version. Upgrading and applying the configuration is done in the background. Once that's done the device reboots. The expected downtime is limited to the time it takes the device to reboot which is usually only 10 - 20 seconds.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+A/B failsafe mechanism
+An A/B failsafe mechanism is used, so if the device doesn't reconnect back to the info-beamer service after 6 minutes, it will reboot into the previous working version. This will reverse all configuration changes made but ensures a device remains usable even if an invalid configuration or non-working OS update was applied.
+
+Any configuration or OS change will always result in a completely new version of the OS with the new settings added. Except for the configuration itself, there are never leftovers from any previous installation.
+
+This process usually takes between 30 seconds and a few minutes, depending on whether or not the latest OS version is already locally available. The device remains fully functional while it's applying the update in the background. Once the installation is complete, the device will reboot into a "trial" version of the new configuration to see if the new settings work. Working in that case means that the device
+
+gets a connection to info-beamer.com
+gets a proper system time
+the info-beamer process runs for at least 10 seconds
+If any of those tests doesn't pass within 6 minutes or the power is removed before passing all tests, the system automatically reverts into the previously running version by rebooting again. If you apply any kind of configuration update or OS upgrade, always make sure the device reboots while still connected to the internet and give it 1-2 minutes to ensure it has enough time to confirm the trial boot.
+
+If you change a configuration and immediately disconnect power after the device reboots, the device sees that as a failed setting change and all changes are rolled back. This is to prevent you from accidentally setting (for example) a wrong WiFi network. If this mechanism wasn't there, you would lose access to the device after such a change forever and would have to physically revert the settings by editing the configuration files on the SD card. This mechanisms cannot be deactivated and is always used for configuration changes and OS upgrades.
+
+Request parameters
+config	JSON Object	The new configuration. Keys within the given JSON object are filenames of files to place in the /config directory on the device. The value is either null if you want to remove an existing file or the base64 encoded value of the new file content. Absent configuration
+files will remain unchanged. The maximum size of each config value is 8K. |
+
+Response
+.ok	true	The request was successful and the device will apply the new configuration.
+Device node command
+POST https://info-beamer.com/api/v1/device/<device_id>/node/<path>
+Permissions: Triggers action device:node-message with 6 request context variables available in addition to the default variables. Click to learn more..
+Posts a message to the device that ends up being sent to the running info-beamer code through a locally delivered UDP message. You can react to that message within Lua using the util.data_mapper or node.event/data functions.
+
+The maximum combined size of the path and data value should not exceed 1400-1500 bytes total as otherwise the data value might be truncated. Only use this feature to send small pieces of information to a device.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+Request parameters
+The <path> value within the url determines the complete path the is used in the UDP packet sent to the device. If you want to address the top-level node, use root.
+
+data	String	The string sent to the node
+Once the request reaches the device it is translated to a UDP packet sent to locally running info-beamer process on port 4444 with the following content:
+
+<path>:<data>
+Response
+.ok	true	The request was successful.
+Note that this doesn't necessarily mean that the running Lua code successfully handled the event. info-beamer might just be restarting or there might be an error in the code that handles the event. A success message only means that the device has acknowledged that it has received and forwarded the data through a UDP packet. You should never rely on a successful delivery.
+
+Device service command
+POST https://info-beamer.com/api/v1/device/<device_id>/service/<path>
+Permissions: Triggers action device:service-message with 6 request context variables available in addition to the default variables. Click to learn more..
+Similarly to node commands, this posts a message to the device that potentially ends up being sent to a package service running on the device through a locally delivered UDP message. The package service must bind to the UDP port provided to it by the SERVICE_DATA_PORT environment variable.
+
+The maximum combined size of the path and data value should not exceed 1400-1500 bytes total as otherwise the data value might be truncated. Only use this feature to send small pieces of information to a device.
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+Request parameters
+The <path> value within the url determines the complete path the is used in the UDP packet sent to the device.
+
+data	String	The string sent to the node
+Once the request reaches the device it is translated to a UDP packet sent to locally to a package service proces. If multiple services are running at the same time, the service matching the longest prefix within the provided path will receive the message with the remainder of the path being included in the sent UDP packet. So if use a path like root/something, the following content is sent to the top-level service:
+
+something:<data>
+Response
+.ok	true	The request was successful.
+Note that this doesn't necessarily mean that the event got handled by the service or that it got indeed delivered. The package service might be restarting due to some error or might not be listening to UDP at all. You should never rely on a successful delivery.
+
+Device session
+POST https://info-beamer.com/api/v1/device/<device_id>/session
+Permissions: Triggers action device:session with 5 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action device:session at a sustained rate of 10 actions per minute (that's a rate of one call every 6 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Initiate a terminal session with the device. This will spawn a new shell on the command and allows you to connect to that shell using a websocket connection. This is used for the Remote Terminal feature on the device detail page. Once the viewer disconnects, all launched processes will be killed (using SIGKILL).
+
+This requests requires the hosted service to contact the device. So this request might take a moment before it returns. There is a maximum 30 second timeout.
+
+Do not use this feature to automate anything on your devices. It's purely provided for interactive debugging on a device and the number of concurrent connection can be limited in the future without prior notice.
+
+Request parameters
+mode	Optional String	Either viewer or root. Defaults to viewer. In viewer mode, the shell is restricted and doesn't have access to the network or the complete filesystem. This mode is intended mostly for debugging purposes and is mostly safe. In root mode you get a full root shell which allows unrestricted access to the device and is quite dangerous as you can break a device in a way that requires a new installation.
+Response
+.session_id	String	The generated session id.
+.mode	String	The selected terminal mode.
+.endpoint	String	The url to a websocket endpoint that connects you to the device.
+Session protocol
+Connect to the endpoint value of the response using a websocket connection. There is a timeout of around 60 seconds after which the device stops the terminal server and you won't be able to connect. So don't wait too long after creating a session.
+
+All data is encapsulated in JSON packets. The initial packet will be as follows. It might take a moment to arrive as the device has to spawn the terminal server first:
+
+{"event": "connected"}
+This means that your websocket connection is now connected to the device. You'll now have to send a setup command to start the shell with the requested terminal size:
+
+{"event": "setup", "rows": 25, "cols": 80}
+This will spawn a new /bin/sh instance in a terminal of the requested size. You cannot change the terminal size later.
+
+At this point you'll receive the terminal output of the shell with packets like this:
+
+{"event": "data", "data": "<output>"}
+You should directly feed this data into your terminal emulator. The only other event generated right now is:
+
+{"event": "eof"}
+at which point you can close your websocket connection. Your client should ignore unknown events.
+
+Your websocket client can send the two packets as follows to control the remote terminal:
+
+{"event": "stdin", "data": "<input>"}
+This sends data to the stdin of the terminal process. Similarly you should send a keepalive command from time to time to ensure the connection stays alive even if the device is behind a NAT. Every 30 seconds is recommended:
+
+{"event": "keepalive"}
+Have a look at https://github.com/info-beamer/package-sdk/tree/master/ib-shell for an example client in Python. If you prefer a browser based client, consider using https://xtermjs.org/
+
+Update device
+POST https://info-beamer.com/api/v1/device/<device_id>
+Update an individual device. The device_id is expected to be an Integer value. You can get those ids in the devices list request.
+
+The required permissions and rate limits depend on the updates made. See below for more information.
+
+Request parameters
+userdata	Optional JSON Object	A JSON object with opaque user data of your choice. Maximum size is 2k.
+location	Optional String	The new device location.
+description	Optional String	The new device description.
+timezone	Optional String	If set, the new timezone for this device. Changing the time zone will trigger a new synchronization for the currently assigned setup as the timezone is part of the setup's config metadata.
+setup_id	Optional Integer	The id of a setup you want to assign to this device. Once assigned the device will immediately start downloading the content and switch to the assigned setup when everything is downloaded. You can only assign new setups to a device. You cannot make a device show no setup once you've assigned one. If you need to show a black screen, you'll have to create a setup that does just that and assign it.
+reboot	Optional Integer	A value from 0-23 inclusive which sets the maintenance hour given in hours since 0:00 UTC time. The device might reboot in that hour for maintenance tasks.
+mark_fixed	Optional 1	If provided this will reset the maintenance flags.
+offline_plan	Optional String	Assigns a new offline plan to this devices. Possible plans can be queried using the List offline plans call. Setting a new offline_plan requires the hosted service to contact the device. So this request might take a moment before it returns.
+suspend	Optional Boolean	If set to "true" and the device can be suspended it will switch to a black screen and payment for the device is suspended until you set suspend to "false" again. Note that you cannot immediately suspend a resumed device again: Instead you have to wait at least three weeks.
+upgrade_blocked	Optional Integer	Number of days this device will not perform automated system upgrades. Setting the value to 0 will resume the default of automated upgrades. Setting the value to 1 will resume upgrades after midnight (UTC). The maximum value is 100 days. This feature is meant to suspend upgrades in case of holidays or other temporary events where upgrading is not wanted. If you feel the need to permanently prevent updates, please get in contact with support.
+device_data	Optional Object	A short JSON object that is passed through directly to the device's config.json metadata field. The maximum size of the data when JSON encoded is 2KB.
+Conditional permissions
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action device:update:userdata with 4 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:location with 5 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:description with 5 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:setup with 6 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:reboot with 5 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:mark-fixed with 4 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:offline-plan with 5 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:suspend with 5 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:upgrade-blocked with 5 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:device-data with 4 request context variables available in addition to the default variables. Click to learn more..
+Conditional rate limits
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Rate limited: You can trigger API action device:update:device-data at a sustained rate of 10 actions per minute (that's a rate of one call every 6 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Response
+.ok	true	The request was successful and all requested changes have been made.
+The response only indicates that the changes were received by info-beamer hosted. It might take a moment for a new setup to become active after you assign it to a device. You can use the is_synced information in the device object to find out if a device is in sync.
+
+Example
+curl -u :$API_KEY https://info-beamer.com/api/v1/device/1234 -d location=office&description=My%20Pi
+Delete device
+DELETE https://info-beamer.com/api/v1/device/<device_id>
+Permissions: Triggers action device:delete with 4 request context variables available in addition to the default variables. Click to learn more..
+Deletes a device. The device_id is expected to be an Integer value. You can get those ids in the devices list request.
+
+Deleting a device removes it from your account. Unless there is a Device Connect Key configured (see below), your device will reboot and anyone that can see the screen can add it to their account.
+
+When you delete a device it will reboot. By default it will then show a PIN that can use used to connect the device to your account. Anyone that has this PIN can do that. You can also make devices automatically join your account using a Device Connect Key.
+
+Response
+.ok	true	The request was successful. The device will clean its cache and reboot at the next possible moment. The device will then return to the device welcome screen.
+Example
+curl -X DELETE -u :$API_KEY https://info-beamer.com/api/v1/device/1234
+Schedules
+Schedules will be documented once their API is considered stable.
+
+Setups
+Setups are a collection of at least a single package and the associated configuration. A setup can be installed on devices. Setups can consist of multiple package instances 'mounted' to different paths within a setup. When you create a new setup, the given package is mounted at /. You can assign or remove additional packages in subdirectories. As each package itself can contain multiple nodes, the resulting tree contains all nodes from all packages.
+
+The following example can hopefully help you understand the relationship between packages, their nodes and how instances of packages are used within a setup. Have a look at this example. This is a setup configuration interface. You might have seen that in the details page of a setup already:
+
+foo
+
+This setup uses the HD Image/Video Player package as it's root package. This package only has a single node named Player. It's complete path within the setup is /. Additionally another package has been added to the setup: The Power Saver package. It was added at the /power path. As the Power Saver package only has a single node, this node ends up at /power. When installing this setup on a device, the files for the toplevel (/) node end up in the directory that is displayed on the device. Below that, in the power directory, you'll find the node files of the power saver node.
+
+This package has two package instances. One for the HD Image/Video Player and one for the Power Saver package. Every setup must have at least one package instance at the root of the tree (/). It can then have multiple child package instances. They can also be nested.
+
+Create a new setup
+POST https://info-beamer.com/api/v1/setup/create
+Permissions: Triggers action setup:create with 3 request context variables available in addition to the default variables. Click to learn more..
+Quota: You can create a maximum total of 8000 setups. Adding more setups will result in an error. Learn more..
+This request will create a new setup based on a given package at its root.
+
+Request parameters
+package_id	Integer	The id of the package at the root of the package tree. See above for more information about this.
+name	String	The name of the setup.
+userdata	Optional Object	User supplied data assigned to this setup. You can store any data for a setup here.
+preset	Optional String	Name of a preset. The valid values for creating a setup based on a setup can be found in the .presets object of the package details API call.
+Response
+.setup_id	Integer	A numerical id that represents the created setup.
+List setups
+GET https://info-beamer.com/api/v1/setup/list
+Permissions: Triggers action setup:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action setup:list at a sustained rate of 15 actions per minute (that's a rate of one call every 4 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Filters: The returned result can be filtered. Click to learn more..
+Lists setups in an account.
+
+Response
+.setups[]	A list of Setup Info Objects
+Setup Info Object
+This API call returns a list of setup info objects that give you basic information about each configured setup. The following fields are present in all returned objects:
+
+.id	Integer	The id of the setup
+.name	String	The name assigned to this setup. You can change the name with the Setup update API call.
+.used	Integer	A counter indicating the number of devices this setup is assigned to.
+.userdata	Object	User supplied data assigned to this setup. You can store any data for a setup here.
+.updated	Integer	Unix timestamp of when the setup was last changed. Changes include name changes, changing the configuration or setting new userdata.
+.config_rev	Integer	The number of times the setup's configuration was changed. This value is also available on the device in its config.json metadata.
+.is_default	Boolean	If true, this setup is automatically assigned to new devices. Only one setup can have a true value.
+.platforms	List of strings	List of platforms compatible with this setup. It's the intersection of platform compatibility of all used packages.
+.has_expands	Optional Boolean	Deprecated: Always false
+Setup details
+GET https://info-beamer.com/api/v1/setup/<setup_id>
+Permissions: Triggers action setup:detail with 2 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action setup:detail at a sustained rate of 60 actions per minute (that's a rate of 1.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Last-Modified support: This API call returns a Last-Modified response header indicating when this object has last been changed.
+Request information about an individual setup. The setup_id is expected to be an Integer value. This API call returns how the setup is put together - for example what packages are used and which assets are provided by the setup. It also returns information about all configuration options, so you can build a dynamic configuration interface for this setup. Finally it returns the current configuration.
+
+Response
+.setup	Object	An object describing the setup. This is basically a Setup Info Object.
+.assets	Object	A description of assets included in each node in the setup. Each individual object key is a complete node path. The values are a list of Setup Asset Info Objects.
+.config	Object	The current configuration for each node in the setup. The keys of the object are the complete node paths with the leading / removed. Each individual value is the the current node configuration as another Object. The content of that objects depends on the configuration options for each node.
+.instances	Object	All packages assigned to this setup. The object's keys are the path within the setup. The value is an Setup Instance Object.
+.nodes	Object	Information about all nodes includes through all packages. The object's keys are the node paths within the setup. The values is an Setup Node Object.
+.presets	Object	Available predefined configuration examples for this setup. It's a combination of all the node preset values defined in the node.json file. The "config" value within each preset in this object can be directly used as a config parameter for the update setup API call.
+Setup Instance Object
+Each setup can have one or more packages assigned to it. An instance object describes these instances and their relationship to each other.
+
+.id	Integer	The instance id
+.parent_id	Integer/Null	The id of the parent instance. null will be returned if this instance is the top level instance within this setup.
+.package	Object	A description of the package of this instance.
+.package.id	Integer	The package id.
+.package.info	Package Info Object	Information about this package.
+.package.last_sync	Integer	Unix timestamp of the time the package was last synced with its source.
+Package Info Object
+This object describes a package. Most of the content is derived from values provided in the package.json file of the package. The following fields are provided:
+
+.author	String	A free text value describing the author of the package
+.name	String	The package name.
+.desc	String	A short description of the package.
+.image	String	A thumbnail url for a small 64x64 image of the package.
+.repository	String/Null	A http/https url linking to the package source repository.
+.version	String/Null	The free form package version number given in package.json
+.lifecycle	String	The current lifecycle of this package. Values are "alpha", "beta", "production" and "obsoleted"
+.platforms	List of strings	A list of supported platforms.
+.nesting	Object	Contains the supported nesting configuration for the package.
+.offline.support	String	Either "yes", "no" or "maybe" indicating if this package can be used offline.
+.offline.info	String	Text description describing why the offline support status is set as it is.
+Setup Node Object
+This object provides information about an individual node of a setup. A setup will have at least one node at the top level (/). There can be multiple nodes if either the single top-level package contains multiple nodes or if multiple packages are used within the setup.
+
+.name	String	Name of the node. This is the name given in node.json.
+.instance_id	Integer	The id of the package instance that provided this node. See the id field in the setup instance object.
+.num_expands	Integer	Deprecated. Always 0.
+.custom_ui	String/Null	If the node has a custom user HTML interface for its configuration, the filename of that interface is returned here. This is mostly for internal use.
+.control_ui	String/Null	If the node has a custom control HTML interface, the filename of that interface is returned here. This is mostly for internal use.
+.options[]	List of Objects	Zero or more options describing the configuration options available for this node. You can see a complete description for all options in the package reference.
+.has_service	Boolean	Indicates if this node includes a package service.
+.permissions	Object	Permissions. See node permissions for possible values.
+.thumb	String	A thumbnail url that can be used to represent this node.
+Setup Asset Info Object
+If a setup includes a resource option the user can select either one of their own assets. Or, if the package includes asset compatible files, they also have the ability to choose those. The setup detail API call returns those additonal assets for each node of a setup. The following information is provided:
+
+.id	String	The id of the asset used when configuring this node. Unlike user uploaded assets, where the id is numeric, the id for node specific assets is given as a string. The string is unique in the scope of each node.
+.filename	String	The filename of the asset
+.filetype	String	Type of asset. Can be "image", "video", "font", "json" or "child".
+.size	Integer	The file size of the asset.
+.thumb	String	A thumbnail url of the asset.
+Update setup
+POST https://info-beamer.com/api/v1/setup/<setup_id>
+Last-Modified support: This API call returns a Last-Modified response header indicating when this object has last been changed. While POST'ing updates you can set an If-Unmodified-Since request header from an earlier Last-Modified response header to prevent overwriting changes made elsewhere and have the API return a 412 error response instead.
+You can update an existing setup: You can change its name, attach userdata or update the configuration for all or individual nodes.
+
+While setup changes are usually synced pretty quickly to a device, you should not rely on that. You should also keep the setup change update rate at a sensible level. Do not use this API to push real time information to your device. Instead use the 'Device command' feature for that.
+
+Request parameters
+userdata	Optional JSON Object	A JSON object with opaque user data of your choice. Maximum size is 2k. The userdata is returned in the Setup Info Object.
+name	Optional String	The new name of this setup.
+config	Optional Object	The new configuration for this setup. See the following description.
+mode	Optional String	If a new config is provided, this decides how this config is merged with the existig config.
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action setup:update:userdata with 2 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action setup:update:config with 3 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action setup:update:name with 3 request context variables available in addition to the default variables. Click to learn more..
+If you set a new config, you usually have to provide a complete configuration objects for all nodes of this setup. The configuration will have to have the same structure as the value of the config field in the setup details response.
+
+If you update the configuration of a setup that is assigned to a device, the device will automatically fetch those changes and activate them.
+
+If you only want to update some part of a setup, you can also specify the mode "update". This will merge the new configuration with the existing configuration: The existing configuration is used and updated with all values given as the new configuration. This can be used to update parts of an existing configuration without touching the rest. For example if you want to update the "name" option of the top-level node "", you can send the following new configuration json:
+
+{"": {"name": "foo"}}
+Using curl, the request might looks like this:
+
+curl -u :$API_KEY https://info-beamer.com/api/v1/setup/42
+    -d 'config={"":{"name":"foo"}}&mode=update'
+Updating an existing setup in "update" mode allows even more complicated merges. If your package uses list options you can also selectivly update values within lists. Here's an example:
+
+curl -u :$API_KEY https://info-beamer.com/api/v1/setup/42
+    -d 'config={"":{"items":[{}, {"text":"foo"}]}}&mode=update'
+This will update the "items" option list in the top level node. It will leave the first item in that list unchanged (thanks to the empty {}). The second element in that list has its "text" value updated to "foo". Any further elements originally in the "items" list will be removed.
+
+Response
+.ok	true	The request was successful. The setup has been updated and the changes will be applied to any device using this setup.
+.syncs	Optional Integer	If included, the number of devices expected to be updated as a result of changes made to the setup.
+Attach package instance
+POST https://info-beamer.com/api/v1/instance/create
+Permissions: Triggers action instance:create with 8 request context variables available in addition to the default variables. Click to learn more..
+A setup consists of one or many packages. There is always a top level package and zero or more packages recursively attached to this top level package. It is of course possible to use the same package multiple time in the same setup.
+
+You can think of a Setup as a collection of individual filesystems (Packages), each with their own directory structure (each directory is a Node) mounted into a single virtual filesystem tree. This API call attaches one of your package to an existing package instance in one of your setups. Reusing the filesystem analogy: You mount a package as a child of an existing Node in the virtual filesystem tree.
+
+Request parameters
+instance_id	Integer	The id of the package instance where you want to attach a new instance. You can get this id in the Setup instance object.
+package_id	Integer	The id of the package you want to add. You can get this id in the Packages list API call.
+name	String	The name of the package. Only lowercase alphanumeric characters (a-z / 0-9 or _ / - can be used. Cannot contains spaces or be empty.
+Response
+.instance_id	Integer	A numerical id that represents the newly created instance. It has been attached to the given instance.
+Delete package instance
+DELETE https://info-beamer.com/api/v1/instance/<instance_id>
+Permissions: Triggers action instance:delete with 5 request context variables available in addition to the default variables. Click to learn more..
+This will delete the given package instance. The instance cannot be deleted if it is the top level package for a setup. It also cannot be deleted if it is referenced in the configuration of its parent node.
+
+If the instance itself has additional child instances, they will be removed from the setup as well.
+
+Response
+.ok	true	The request was successful. The instance and its childs have been removed from their setup.
+Delete setup
+DELETE https://info-beamer.com/api/v1/setup/<setup_id>
+Permissions: Triggers action setup:delete with 2 request context variables available in addition to the default variables. Click to learn more..
+This will delete a setup. You cannot delete a setup if it is still used on a device. You can check the used information in a Setup Info Objects to find out on how many devices a setup is currently used.
+
+Packages
+A package is a collection of info-beamer nodes together with a description of how they can be configured. You can read more about packages on the package reference. Packages cannot be directly install on a device as they have to be configured through a setup.
+
+Create a new package
+POST https://info-beamer.com/api/v1/package/create
+Permissions: Triggers action package:create with 4 request context variables available in addition to the default variables. Click to learn more..
+Quota: You can create a maximum total of 500 packages. Adding more packages will result in an error. Learn more..
+Request parameters
+source	Optional String	The source url for the package. See below.
+asset_check	Optional String	Decides if the import should apply additional checks during import and syncs. See below.
+ssh_key_id	Optional Integer	For git pull based packages only: Specify the SSH key used for authentication. If not given, the default key shared across all customers is used instead.
+userdata	Optional Object	User supplied data assigned to this package. You can store any data for a package here.
+Each package created on info-beamer hosted must be imported from somewhere. There are different possible ways of preparing a package for import into info-beamer hosted. If the source parameter is omitted, a new git repository is created. Otherwise the package is imported from the given urls. The package is validated to make sure that is is syntactially correct.
+
+If you submit the value "full" as asset_check, info-beamer hosted will run additional validations on the package files: Images (png/jpg) and videos (mp4) are checked to make sure that info-beamer is able to play those files. Once set, this option cannot be changed and will also be active while updating the package.
+
+Response
+.package_id	Integer	A numerical device id that represents the created package.
+List packages
+GET https://info-beamer.com/api/v1/package/list
+Permissions: Triggers action package:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action package:list at a sustained rate of 15 actions per minute (that's a rate of one call every 4 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Response
+.packages[]	List of Package Objects
+Package Object
+The object for each package in the package list API call has the following elements:
+
+.id	Integer	The package id.
+.size	Integer	The toal package size in bytes. This is used for generating the daily costs and can also be used to estimate the number of byte required to send a package to a device.
+.used	Integer	A counter indicating how often this package is used as an instance in a setup. Packages cannot be deleted if they are still in use.
+.pushed	Boolean	Is the package git pushed?
+.public_url	Optional String	If this is a public package, this will contain the url to its public page.
+.info	Package Info Object	Detailed information about this package.
+.available_update	Optional Package Version Object	Information about an available upgrade for this package.
+.ssh_key	Optional SSH key Info Object	Information about the SSH key used for git pull based packages.
+.userdata	Object	User supplied data assigned to this package. You can store any data for a package here.
+Package details
+GET https://info-beamer.com/api/v1/package/<package_id>
+Permissions: Triggers action package:detail with 2 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action package:detail at a sustained rate of 60 actions per minute (that's a rate of 1.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Request information about an imported package. The package_id is expected to be an Integer value.
+
+Response
+.id	Integer	The package id
+.info	Package Info Object	Information about this package
+.last_sync	Integer	Unix timestamp of the time the package was last synced with its source.
+.size	Integer	The complete size of the package in bytes.
+.asset_check	Boolean	Whether info-beamer hosted does additional asset checks on all files in this package. See the asset_check option while creating a package.
+.userdata	Object	User supplied data assigned to this package. You can store any data for a package here.
+.pushed	Boolean	Is the package git pushed?
+.source	String/Null	The url from which the package was initially imported. If it's a git pushed package, the source is null.
+.version	String/Null	The "version" of the source. For git repositories this is the branch that was imported.
+.git_push_url	Optional String	If this is a git pushed repository, this is the https endpoint used as a git remote.
+.available_update	Optional Package Version Object	Information about an available upgrade for this package.
+.release	Optional Package Version Object	If the package has a current version (in .info.version), this will contain additional information about the current version.
+.public_url	Optional String	If this is a public package, this will contain the url to its public page.
+.files[]	List of Package File Objects	Describes the individual files within that package.
+.nodes[]	List of Package Node Objects	Describes the info-beamer nodes in this package.
+.presets[]	Object	All available predefined configuration values for this package. They are defined within each node.json file of this package. The key can be used as the preset value in the create setup API call.
+.setups[]	List of Package Setup Objects	Describes in which setups this package is used.
+.ssh_key	Optional SSH key Info Object	Information about the SSH key used for git pull based packages.
+.docs.help	String	Raw HTML for the documentation page of the package. This HTML can be directly used to render the documentation of a package. It's based on the README.md or README.creole file. If no documentation is included in the package, an empty string is returned.
+.doc.copyright	String	Raw string for the copyright page of the package. It's based on the COPYRIGHT file. If no such file is included in the package, an empty string is returned.
+Package Version Object
+Version information for a package. The package version is taken from the package.json file.
+
+Each day, info-beamer hosted will automatically pull the package source to see if there is an update available. If the current package version is different from the version of the source (as specified in the package.json file), this object will contain information about the update.
+
+Likewise this object is used to describe the current release of a package if the package provides version information in the package.json file.
+
+.version	String	The new/current version number.
+.changelog	String	An url to the changelog of the new/current version.
+Package File Object
+Gives information about an individual files in a package.
+
+.path	String	The complete filename including path of the file.
+.size	Integer	Size in bytes.
+.hash	String	The md5 hash of the file. This is used internally.
+Package Node Object
+Describes a node within a package. A node is a directory with the ability to be configured. Learn more about this in the package reference.
+
+.name	String	The name of that node. This is taken from the node.json file of the node.
+.path	String	The path of the node within the package. The empty string "" denotes that this is the root node within the package.
+.has_service	Boolean	Indicates if this node includes a package service.
+.permissions	Object	Permissions. See node permissions for possible values.
+.thumb	String	A thumbnail url that can be used to represent this node.
+Package Setup Object
+Describes where this package is used in the current hosted account.
+
+.id	Integer	The id of the setup that uses this package.
+.name	String	The name of the setup that uses this package.
+.instance_id	Integer	The instance id of this package.
+.path	String	Where within the referenced setup is this package attached? The empty string (""), for example, means that this package the root package of the referenced setup.
+.used	Integer	A counter indicating the number of devices the setup is assigned to.
+Update package
+POST https://info-beamer.com/api/v1/package/<package_id>
+Permissions: Triggers action package:update:userdata with 2 request context variables available in addition to the default variables. Click to learn more..
+You can only update the userdata object for a package through the API. All other package information can only be updated by syncing the package with its source. See below.
+
+Request parameters
+userdata	Optional Object	User supplied data assigned to this package. You can store any data for a package here.
+ssh_key_id	Optional Integer	Sets a new ssh key used for future git pulls. Can only be set for repositories actually using git pulls.
+Response
+.ok	true	Userdata was updated.
+GET https://info-beamer.com/api/v1/package/<package_id>/sync
+POST https://info-beamer.com/api/v1/package/<package_id>/sync
+Permissions: Triggers action package:update:sync with 3 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action package:update:sync at a sustained rate of 10 actions per minute (that's a rate of one call every 6 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+This calls supports both GET and POST requests. GET requests make it easier to integrate this API call into any automated post-commit hook. You can use the ?api-key=<...> url argument for authentication in that case.
+
+You cannot edit packages directly on info-beamer hosted. Packages instead are either pulled from a source or synced by git push. For pulled packages you specify the source url when you create a package.
+
+If you want to make changes to a package you'll have to make those at the source and then make info-beamer hosted pull those changes. For git pushed package, using git push will update the package. See git. for more information on how this works and which policy actions you can use in that case.
+
+All setups using the package will automatically be updated if a package is sycned. All devices that use those setups will fetch the changes.
+
+Request parameters
+probe	Optional Boolean	If set to true, only probe for available update, don't import it. If false (default) import any updated package content.
+Response
+.ok	true	The source for that package was successfully contacted. The package is now in sync with the source.
+.updated	Integer	Number of updated files (added/changed/removed).
+Delete package
+DELETE https://info-beamer.com/api/v1/package/<package_id>
+Permissions: Triggers action package:delete with 2 request context variables available in addition to the default variables. Click to learn more..
+This will delete a package from your account. You cannot delete package that are used in any of your setups. You can find out setups that use a package with the package details API call and look at the .setups[] list.
+
+Playlists
+Playlists allow you to organize assets into static or dynamic playlists. Such playlists can then be embedded in other playlists or used in a setup's configuration.
+
+Dynamic playlists can automatically include assets matching various conditions. Every time you update or add a new asset, all dynamic playlists are reevaluated and updated within a few seconds. Updated playlists then instantly trigger updates of other playlists or setups that embed them. This greatly simplifies updating content across different setups.
+
+A playlist at its core consists of slots and filters. Slots are responsible for selecting zero or more assets. Assets can be added directly or can be dynamically added based on conditions like file type or resolution. Once all slots have been evaluated the resulting list of assets can be filtered. Filtering allows you to reorder, trim or otherwise manipulate that list of assets. The result of both slots and filtering produces the final playlist that can be embedded into other playlists or used within your setups.
+
+Create a new playlist
+POST https://info-beamer.com/api/v1/playlist/create
+Permissions: Triggers action playlist:create with 1 request context variables available in addition to the default variables. Click to learn more..
+Quota: You can create a maximum total of 200 playlists. Adding more playlists will result in an error. Learn more..
+Request parameters
+name	String	Name of the new playlist.
+slots	Optional JSON List	The initial slots configuration for the playlist. If sent, the request must include 'slots', 'filters' and 'default_duration'.
+filters	Optional JSON List	The initial filters configuration for the playlist. If sent, the request must include 'slots', 'filters' and 'default_duration'.
+default_duration	Optional float value	The initial default playtime for all assets without a natural duration. If sent, the request must include 'slots', 'filters' and 'default_duration'.
+See the playlist update API call for details on the slots, filters and default_duration parameters.
+
+Response
+.playlist_id	Integer	A numerical playlist id that represents the created playlist.
+List playlists
+GET https://info-beamer.com/api/v1/playlist/list
+Permissions: Triggers action playlist:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action playlist:list at a sustained rate of 15 actions per minute (that's a rate of one call every 4 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Response
+.playlists[]	List of Playlist Summary Objects
+Playlist Summary Object
+The objecct for each playlist in the playlist list API call has the following elements:
+
+.id	Integer	The playlist id.
+.name	String	Name of the playlist.
+.slots	Integer	Number of slots used to create this playlist.
+.items	Integer	The number of items generated by this playlist. Note that this doesn't necessarily match the number of slots as one slot can generate zero or multiple items.
+.used	Integer	A counter indicating how often this playlist is used within your account. You cannot delete a playlist if they are still in use.
+.total_duration	Float	The total playback duration of all items within this playlist. Note that embedded scheduling information might restrict which items are active at any moment.
+.uses_scheduling	Boolean	True if any of the items in this playlist has scheduling rules attached to it.
+.truncated	Boolean	True if the number of items generated by the slots exceeds 1000 and the number of generated items needed to be restricted.
+Playlist details
+GET https://info-beamer.com/api/v1/playlist/<playlist_id>
+Permissions: Triggers action playlist:detail with 1 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action playlist:detail at a sustained rate of 60 actions per minute (that's a rate of 1.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Last-Modified support: This API call returns a Last-Modified response header indicating when this object has last been changed.
+Request information about a playlist. The playlist_id is expected to be an Integer value.
+
+Response
+.id	Integer	The playlist id.
+.name	String	Name of the playlist.
+.slots	List of Lists	A list of Playlist Slot Objects
+.filters	List of Lists	A list of Playlist Filter Objects
+.default_duration	Float	The default playback duration applied to items without a natural duration like images.
+.items	List of Objects	A list of Playlist Item Objects
+.uses	Object	Information on where this playlist is used. See playlist uses.
+.total_duration	Float	The total playback duration of all items within this playlist. Note that embedded scheduling information might restrict which items are active at any moment.
+.uses_scheduling	Boolean	True if any of the items in this playlist has scheduling rules attached to it.
+.truncated	Boolean	True if the number of items generated by the slots exceeds 1000 and the number of generated items needed to be restricted.
+Playlist uses
+An object describing where the playlist is used:
+
+.<type>[]	Top level elements decribe where the playlist is used. Each type returns a list detailing the use of the playlist.
+.<type>[].id	Id of the object using the asset.
+.<type>[].name	Name of the object using the asset.
+Playlist Slot Object
+Each playlist slot is represented by a two element list of ["type", { .. config ..}]. The value of 'type' is a string with one of three possible values while 'config' is an object containing the corresponding configuration depending on the specified type:
+
+Slot type "asset"
+An asset slot directly references on of the assets. An asset slot has the following configuration:
+
+.asset_id	Integer	References the id of an asset.
+.duration	Optional Float	The playback duration for the asset. If not specified or set to null the natural duration of the asset is used. For assets without a natural duration, the playlist's default duration is used.
+.schedule	Optional Schedule	If set, specifies the schedule for this asset. If not specified, the asset is 'always' scheduled.
+Slot type "playlist"
+This slot type embeds another playlist within this playlist. Playlists can be nested up to three levels deep. Playlist dependencies cannot by cyclic and you can at most embed 10 other playlists into another playlist.
+
+A slot embedding another playlist has the following configuration:
+
+.playlist_id	Integer	References the id of another playlist.
+.schedule	Optional Schedule	If provided and not set to null specifies a new schedule applied to all items embedded by the referenced playlist. This allows you to overwrite scheduling for all embedded items. If not provided the embedded items will use their schedule as specified by the embedded playlist.
+Slot type "conditions"
+This slot type dynamically adds zero or more assets depending on zero or more conditions. A maximum number of 5 condition slots can be added to a single playlist. A single condition slot can have at most 10 conditions. Assets matching all of the provided conditions are added to the playlist. If you want to add assets from mutually exclusive conditions, you'll have to use multiple different 'conditions' slots.
+
+The slot configuration for a 'conditions' slot looks as follows:
+
+.conditions	List of Lists	A list of Condition Objects
+.schedule	Optional Schedule	If provided and not set to null specifies a new schedule applied to all items embedded by this slot. If not specified, the embedded assets are 'always' scheduled.
+Condition Object
+Each condition is represented by a two element list of ["type", { .. config ..}]. The value of 'type' is a string representing the type of condition. 'config' is an object containing the corresponding configuration depending on the specified type.
+
+The following conditions are currently supported:
+
+Condition 'orientation'
+This condition evaluates each asset's aspect ratio and returns matching assets. This conditions has the following configuration:
+
+.orientation	String	An orientation given by one of the following string values: 'vertical', 'horizontal', '16:9', '4:3', '9:16' or '3:4'.
+The 'vertical' and 'horizontal' values match of the width of an asset exceeds its height or vice versa. The other values only match if the assets is within 0.5% of the specified aspect ratio.
+
+Condition 'resolution'
+This condition matches assets with an exact pixel resolution. It has the following configuration:
+
+.dim1	Integer	The horizontal resolution or width of the asset.
+.dim2	Integer	The vertical resolution or height of the asset.
+.match	String	Either "exact", "minimum" or "maximum" depending on how the specified dimensions should match against the width/height of each asset.
+Condition 'in_path'
+This condition matches assets within a single path. A path of an assets is specified by naming-convention, so for example an asset with the filename project A/Outdoor/teaser.jpg will be considered to be in the path project A/Outdoor. Similarly a path value of a/b will match asset with filenames like a/b/image.jpg but not a/image.jpg (as it's not within a/b) or a/b/c/image.jpg (as it is in a/b/c). This condition has the following configuration:
+
+.path	String	The path for matching assets.
+.include_childs	Optional Boolean	If set to true, also include assets from any matching child folder.
+Condition 'filename'
+This condition mathes assets based on filename matching. Similar to in_path this will use the naming-convention for determining which part of an assets filename is matched. For an asset with filename of project A/Outdoor/teaser.jpg, this condition will only evaluate the teaser.jpg part (the component after the last /). This condition has the following configuration:
+
+.search	String	A glob-like string for filename matching. Wildcards like * and ? are supported. For example *.jpg will match all files ending with .jpg.
+Condition 'group_select'
+This condition groups of assets based on a regex. Each group is them emitted in natural order if it contains at least the minimum or exact amount of items. This allows you to select, for example, assets with filenames like, asset-foo-1.jpg, asset-foo-2.jpg, asset-bar-1.jpg, asset-bar-2.jpg and ensure that each group has, in that case, two assets. This condition can be used together with the 'every' filter: The group select can select certain asset groups with an specified size while the 'every' filter then selects the n-th item within each group.
+
+The regex provided requires you to generate two match groups. For the above example something like (.*)-([0-9]+).jpg might work. The first match group selects the asset name while the second group matches the number. Assets are then grouped by name and emitted if the group contains at least two assets.
+
+.pattern	String (Regex)	A regex required to contain two match groups. The first match group groups the assets while the second sets the order within that group.
+.group_size	Integer	Required group size. Groups are not emitted if the number of items in a group is lower than this value.
+.match	String	Either "exact" or "minimum": Specifies if the group size must match exactly the number of items specified in group_size or if it must contain at least that number. Items within a group are sorted in natural order, so specifying "minimum" will return the first group_size items within each group based on their sorted filenames.
+Condition 'type'
+This condition matches on file type (image or video) and optional further restrict the matching assets based on file format. It has the following configuration:
+
+.type	String	Either "image" or "video"
+.format	Optional String	If type is 'image': either "jpeg" or "png". If 'type' is 'video': Either "h264" or "hevc".
+Condition 'tags'
+This condition matches any assets tagged with a set of specified tags:
+
+.tags	List of strings	The tags to match. All of the specified tags must be assigned to an asset for this condition to match.
+.mode	String	How to match assets against the specified tags: Can be "all" to require an asset to have all tags, "any" to require it to has at least one of the specified tags or "none" to prevent assets with any of the specified tags from matching. "none" is mostly useful in combination with another condition that already filters the list of potential assets.
+Condition 'userdata'
+This condition matches based on each assets userdata. It uses one of five matching function to compare a userdata's top-level value with the condition value.
+
+.key	String	Selects which userdata key to evaluate. Essentially extracting that assets value using userdata[key].
+.value	String	The expected value.
+.cmp	String	A comparison function matching the assets extracted value (by 'key') with the expected value. The list of functions is specified below.
+.invert	Boolean	If true, inverts the cmp function's match value.
+Conditions are only matched using the following comparison function if the data type within the userdata in compatible. So if you use, for example, "str_eq", any asset with a non-string userdata value will be skipped regardless of how invert is set.
+
+"str_eq"	True if the assets userdata value equals the expected value
+"int_eq"	True if the assets userdata value equals the expected value using numerical comparison. The condition doesn't match if either the expected value cannot be converted to a number or the userdata value is not numeric.
+"int_gt"	True if the assets userdata value is greater than the expected value using numerical comparison. See 'int_eq' for data type requirements.
+"int_lt"	True if the assets userdata value is less than the expected value using numerical comparison. See 'int_eq' for data type requirements.
+"exists"	Tests if the asset's userdata contains any value the specified 'key'. The 'value' is ignored in this case.
+Playlist Filter Object
+Each playlist filter is represented by a two element list of ["type", { .. config ..}]. The value of 'type' is a string specifying which filter to apply, while 'config' is an object containing the corresponding configuration depending on the specified type. Filtering works on a list of assets produced by slots and modifies that list. The following filter types are supported:
+
+Filter 'limit'
+This filter limits the number of assets in a playlist. It allows you to restrict a playlist to a given number of assets, throwing away any excess asset. This filter has the following configuration:
+
+.limit	Integer	Minimum value of 1. Restricts the playlist size to given number of assets.
+Filter 'cut'
+This filter allows you to restrict a playlist's total play time. There are three different modes to handle assets exceeding the targeted total play time. This filter has the following configuration:
+
+.cut	Float	The targeted maximum playtime of a playlist in seconds.
+.mode	String	One of three possible values. "before": Removes any assets that would result in the playlist exceeding the playtime set by 'cut'. "after": Keeps the asset that first exceeds the targeted play time but remove all following assets. "hard": Truncates the asset first exceeding the targeted play time to exactly match the remaining play time and remove all following assets.
+Filter 'clamp_item'
+This filter allows you to restrict each individual item's playtime to a minimum or maximum time, specified in seconds. Both limits are optional.
+
+.min	Float	If non-null, ensures each item's duration is set to at least this number of seconds. Must be at least 1 second.
+.max	Float	If non-null, ensures each item's duration is set to at most this number of seconds. If a minimum is set, must be at least the value of the specified minimum.
+Filter 'dedup'
+This filter removes duplicate assets from the playlist. Can be used to remove duplicate assets resulting from different slots adding them. This filter has the following configuration:
+
+.method	String	Either "hash" or "id". When using "hash", duplicate assets will be remove even if they are uploaded to the account multiple times using different filenames. When using "id", only deduplicate based on the asset's id.
+Filter 'every'
+This filter selects every then n-th asset from each set of set_size assets. As an example: setting n to 1 and set_size to 2 will result in asset 1, 3, 5 and so on. Setting it to n 2 with set_size 2 will result in asset 2, 4, 6 and so on.
+
+.n	Integer	At least 1. If 1, it selects the first asset within a group of set_size assets.
+.set_size	Integer	At least 1: Specifies the set size.
+Filter 'split'
+This filter can split a playlist into multiple parts and then return one of those parts. The main purpose of this filter is to have, for example, two playlists, both embedding a third playlist and then using this filter in both playlists to split them into different parts. This filter has the following configuration:
+
+.splits	Integer	Number of splits. Minimum value is 2.
+.method	String	Split condition. Splitting can either be based on the number of assets within each split (using "count") or based on the play time ("duration"). The first method tries to produce equally sized splits while the latter tries to produce splits with equal play time.
+.n	Integer	The selected split to return. Must be between 1 and splits.
+Filter 'shuffle'
+This filter randomizes the order of assets within a playlist. The randomization is stable, so produces the same order if the number of items doesn't change. So playlists won't change every time you save an otherwise unmodified playlist. But you should never rely on the order of a shuffled playlist. This filter doesn't require configuration, so provide an empty configuration object ({}).
+
+Filter 'first_if_any'
+This filter's result depend on whether the first slot produces one or more items. If it doesn't produce anything (which can only happen for conditional slots or embedded playlists), all items from the remaining slots get included in the final result. Otherwise, if the first slot produces at least one item, only those will be included in the final result and items from all other slots will be removed.
+
+Filter 'mix'
+This filter cycles through all the assets added by each playlist slot and uses a configurable strategy to decide when to switch to the next slot.
+
+.strategy	String	Either "avoid_touching_slot_idx" or "equal_slot_playtime".
+The strategy "avoid_touching_slot_idx" tries to arrange items in the produced playlist to avoid items from the same slot to be next to each other in the generated playlist. Obviously that's not always possible if the number of items produced by individual slots differ.
+
+The strategy "equal_slot_playtime" similarly cycles through all items produced by each slot but uses the play time up to this point to make the decision when to switch to the next slot. The result is a playlist that fairly mixes all slots so none dominates the resulting playlist for too long. This also works best if the producing slots contain multiple items and play times of individual items don't differ too much.
+
+See also: slot cycle filter.
+
+Filter 'sort'
+Sorts the produced playlist by asset properties.
+
+.field	String	"filename" sorts by lower-case verbatim filename. "filename_natural" also sorts by filename but handles embedded numbers within filenames. Finally "uploaded" sorts by upload date.
+.reverse	Boolean	If set to true reverses the produced result.
+Filter 'repeat'
+Repeats the items produced up to this point multiple times to produce a longer playlist.
+
+.n	Integer	Number of times to repeat the playlist. Must be at least 1.
+.method	String	Can be either "all" to repeat the complete playlist or
+"each" to repeat each individual item. |
+
+Note that the resulting playlist cannot exceed 1000 items. Repeating a playlist too often will result in items that exceed this limit being truncated from the generated playlist.
+
+Filter 'orientation'
+Filters items from the resulting playlist that don't have the specified orientation.
+
+.orientation	String	"horizontal" keeps only horizontal items (those with width > height). "vertical" keeps vertical items.
+Filter 'slot_cycle'
+Cycles through all slots producing result items. The longest slot determines the length of the produced playlist. For example if you have one slot producing three items, while another slot only produces a single item, that single item will be repeated three times.
+
+Playlist update
+POST https://info-beamer.com/api/v1/playlist/<playlist_id>
+Last-Modified support: This API call returns a Last-Modified response header indicating when this object has last been changed. While POST'ing updates you can set an If-Unmodified-Since request header from an earlier Last-Modified response header to prevent overwriting changes made elsewhere and have the API return a 412 error response instead.
+Request parameters
+name	Optional String	Updates the name of the playlist
+slots	Optional JSON List	The new slots configuration for the playlist. If sent, the request must include 'slots', 'filters' and 'default_duration'.
+filters	Optional JSON List	The new filters configuration for the playlist. If sent, the request must include 'slots', 'filters' and 'default_duration'.
+default_duration	Optional float value	The new default playtime for all assets without a natural duration. If sent, the request must include 'slots', 'filters' and 'default_duration'.
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action playlist:update:name with 2 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action playlist:update:list with 1 request context variables available in addition to the default variables. Click to learn more..
+The expected slots value is the same as returned in the playlists playlist details call: It's a list of individual slot objects, each representing either a asset, embedded playlist or a dynamic asset search.
+
+Similarly the filters value corresponds to the returned filters value returned in the playlist details call: It's a list of filters applied to the playlist after generated by all slots. See the filter object documentation for details.
+
+Response
+.ok	true	The request was successful. The playlist has been updated and the changes will be applied to embedding playlists as well as all setups and devices using this playlist.
+.syncs	Optional Integer	If included, the number of devices expected to be updated as a result of changes made to the playlist.
+Delete playlist
+DELETE https://info-beamer.com/api/v1/playlist/<playlist_id>
+Permissions: Triggers action playlist:delete with 1 request context variables available in addition to the default variables. Click to learn more..
+This will delete a playlist from your account. You cannot delete playlists that are used in any of your setups or embedded within another playlist. You can find out other objects that use a playlist using the playlist details API call and information returned in its .uses response.
+
+Assets
+Assets are files (images, videos, fonts or json data) that can be used to configure your setups.
+
+Upload asset
+POST https://info-beamer.com/api/v1/asset/upload
+Permissions: Triggers action asset:upload with 4 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action asset:upload at a sustained rate of 120 actions per minute (that's a rate of 2.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Quota: You can create a maximum total of 8000 assets. Adding more assets will result in an error. Learn more..
+You can upload an asset to your account with this API call. The request is expected to use the multipart/formdata content type.
+
+The following file extensions are supported:
+
+mp4, mov, mkv	Video files. Must be in h264 format.
+jpg, png	Image files. The image must not be bigger than 2048x2048 pixels.
+ttf, otf	Font files.
+json	JSON data file.
+You can overwrite existing asset files by using the filename of an existing asset. Asset filenames are case-insensitive, so TEST.PNG and test.png are treated identically. If you upload an asset with an identical name, the original asset will be replaced and the API call will return the asset id assigned to the previous version. Setups that use such an asset will automatically use the newly uploaded version of the asset. Devices that show this setup will automatically update. If you replace an existing asset, its userdata and tag information will also be overwritten with the new values.
+
+In you're trying to place files into folders, note that the info-beamer backend doesn't know about folders at all. The web dashboard visualizes filenames with / in to create virtual folders. As an example:
+
+If you upload an asset with the filename Testing/Video.mp4, the dashboard will show the file Video.mp4 in the folder Testing. There are no dedicated API calls for folder operations at the moment. All folder operations are based on renaming individual assets.
+
+Request parameters
+You must use a application/x-www-form-urlencoded based request for this API call.
+
+file	Binary	The binary file content and its filename.
+tags	Optional String	A comma separated string with tags that will be assigned to the asset.
+userdata	Optional JSON Object	User supplied data assigned to this asset. Must be JSON formatted. Up to 2k can be stored.
+Response
+.ok	true	The file was uploaded and imported into the account.
+.asset_id	Integer	The asset id of the uploaded file.
+.info	Asset Info Object	Information about the uploaded asset.
+Example
+Upload the file in $FILE
+
+curl -u :$API_KEY -F file=@$FILE https://info-beamer.com/api/v1/asset/upload
+If you want to specify the filename:
+
+curl -u :$API_KEY -F file="@$FILE;filename=folder/example.jpg" https://info-beamer.com/api/v1/asset/upload
+Asset Info Object
+This is similar to the Setup Asset Info Objects returned in the setup details API call. It provides information about an uploaded asset.
+
+.id	Integer	The id of the asset. This is a numeric if, unlike the asset ids returned in the setup details API call, which are always strings.
+.features	List of Strings	Lists the required features to play this asset on a device.
+.filename	String	The filename of the asset
+.filetype	String	Type of asset. Can be "image", "video", "font", "json" or "child".
+.size	Integer	The file size of the asset.
+.thumb	String	A thumbnail url of the asset.
+.metadata	Metadata Object	Metadata about the asset.
+.userdata	Object	A JSON object with opaque user data.
+.used	Integer	A counter indicating how often this asset is used in your setups. Assets cannot be deleted (only overwritten) if they are still in use.
+.uploaded	Integer	Unix timestamp of when the asset was uploaded.
+.tags[]	List of Strings	Tags assigned to this asset during the upload.
+.uses	Optional Object	Included in the response when querying about individual assets. See asset uses.
+.json	Optional Object	Only included in the response when querying about individual assets and the asset is a JSON file. Returns the asset's JSON content.
+Asset uses
+Included in asset info objects returned for individual asset queries like asset details or asset uploads. Describes in detail where the assets is used:
+
+.<type>[]	Top level elements decribe where the asset is used. Currently only the setup type is used. Each type returns a list detailing the use of the asset.
+.<type>[].id	Id of the object using the asset.
+.<type>[].name	Name of the object using the asset.
+Metadata Object
+Information about an asset. Right now the following information is provided:
+
+For images:
+
+.width	Integer	Image width.
+.height	Integer	Image height.
+.format	String	The image file format: "png" or "jpeg".
+For videos:
+
+.width	Integer	Video width.
+.height	Integer	Video height.
+.format	String	Video format. "h264" or "hevc".
+.duration	Float	Video duration in seconds.
+No metadata information is provided for JSON files or truetype font assets.
+
+Import asset
+POST https://info-beamer.com/api/v1/asset/import
+Permissions: Triggers action asset:import with 4 request context variables available in addition to the default variables. Click to learn more..
+Quota: You can create a maximum total of 8000 assets. Adding more assets will result in an error. Learn more..
+Rate limited: You can trigger API action asset:import at a sustained rate of 120 actions per minute (that's a rate of 2.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Instead of uploading an asset you can also tell info-beamer hosted to fetch an assets from a publicly reachable url. The importer supports the same asset types and file extensions and the upload asset API. Only HTTP and HTTPS urls are supported.
+
+Request parameters
+url	String	The HTTP(S) url of the asset to be imported.
+filename	Optional String	The filename of the imported asset. If no filename is given the filename from the url parameter will be used
+tags	Optional String	A comma separated string with tags that will be assigned to the asset.
+userdata	Optional JSON Object	User supplied data assigned to this asset. Must be JSON formatted. Up to 2k can be stored.
+Response
+.ok	true	The file was uploaded and imported into the account.
+.asset_id	Integer	The asset id of the uploaded file.
+.info	Asset Info Object	Information about the uploaded asset.
+List assets
+GET https://info-beamer.com/api/v1/asset/list
+Permissions: Triggers action asset:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action asset:list at a sustained rate of 20 actions per minute (that's a rate of one call every 3 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Filters: The returned result can be filtered. Click to learn more..
+Response
+.assets	List of Asset Info Objects
+Asset details
+GET https://info-beamer.com/api/v1/asset/<asset_id>
+Permissions: Triggers action asset:detail with 3 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action asset:detail at a sustained rate of 60 actions per minute (that's a rate of 1.0/s). Excessive calls will return a HTTP 429 response. Learn more..
+Returns information about an individual asset. The asset_id is expected to be an Integer value.
+
+Response
+This call returns an Asset Info Object.
+
+Update asset
+POST https://info-beamer.com/api/v1/asset/<asset_id>
+You can change certain properties of an uploaded asset with this call.
+
+Request parameters
+userdata	Optional JSON Object	Custom data assigned to this asset. Must be JSON formatted. Up to 2k can be stored.
+tags	Optional String	A comma separated string with tags that will be assigned to the asset.
+filename	Optional String	Updates the filename of the stored asset. The new name must not already exist in the account. So you can't overwrite existing assets that way.
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action asset:update:userdata with 3 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action asset:update:tags with 3 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action asset:update:filename with 4 request context variables available in addition to the default variables. Click to learn more..
+Response
+.ok	true	The request was successful. The assets properties have been updated.
+Delete asset
+DELETE https://info-beamer.com/api/v1/asset/<asset_id>
+Permissions: Triggers action asset:delete with 3 request context variables available in addition to the default variables. Click to learn more..
+This will delete the assets. Can asset cannot be deleted if it is used in a setup.
+
+Response
+.ok	true	The request was successful. The assets has been deleted.
+Account
+Get account information
+GET https://info-beamer.com/api/v1/account
+Permissions: Triggers action account:detail with the default context variables. Click to learn more..
+This will return information about your account.
+
+Response
+.balance	Float	The current account balance.
+.mine	Boolean	If the API key accessing this account is also the owner of the account.
+.default_setup_id	Integer/Null	The id of the default setup that is assigned to new devices
+.devices_active	Boolean	Whether your devices show their content. false usually means that your account balance is negative.
+.email	String	The email address associated with your account.
+.message	String	In case of service issues we try to notify users within the dashboard or in special cases across all pages about the issue. This message is provided as a string here. An empty string means everything is running smoothly.
+.usage	Object	These numbers are used for billing purposes and correspond to the values within your account info page.
+.usage.devices	Integer	Number of active devices.
+.usage.storage	Integer	Used storage in bytes.
+.quotas	Object	Account Quotas. See below.
+.quotas.<key>.value	Integer	Current quota value.
+.quotas.<key>.limit	Optional Integer	If provided, this is the hard limit of the quota.
+.userdata	Object	User supplied data. You can store any data for an account here.
+The quotas returned describe various resources within the account. Right now setups, packages and assets are limited by quotas. Each quota has a current value as well as an optional limit if a limit is in effect. Exceeding the limit will result in failing API calls when creating a new object.
+
+You can also see your current quotas on the account page. The limits can be increased if required. Contact support for that.
+
+Set account information
+POST https://info-beamer.com/api/v1/account
+Request parameters
+default_setup_id	Optional Integer/Emtpy	The id of the default setup that is installed for new devices. If you send an empty string the default setup feature is disabled and you'll have to manually assign setups to new devices.
+userdata	Optional JSON Object	A JSON object with opaque user data of your choice. Maximum size is 2k.
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action account:update:default-setup-id with 2 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action device:update:userdata with the default context variables. Click to learn more..
+Response
+.ok	true	The request was successful and then setting was applied.
+Get device connect key
+GET https://info-beamer.com/api/v1/account/connect-key
+Generate a device connect key. The resulting value can be added to an OS installation as /config/device-connect-key.txt.
+
+Request parameters
+serial	Optional String	An optional serial number. If provided, the resulting connect key will be scoped to only allow adding the device with the given serial number.
+Permissions: Triggers action account:connect-key with the default context variables. Click to learn more..
+Response
+.connect_key	string	The connect key for usage in /config/device-connect-key.txt.
+.restrictions	object	Any restrictions included in the provided connect key.
+.restrictions.serial	optional String	If given, the provided connect key only allows the device with the given serial number to join the account.
+Access
+Before proceeding, you might take a look at the permission system documentation.
+
+An access describes a relationship between an inviting and an invited account. Here is the flow chart describing the life cycle of an access.
+
+Access lifecycle
+
+Create access
+POST https://info-beamer.com/api/v1/access/create
+Permissions: Triggers action access:create with 4 request context variables available in addition to the default variables. Click to learn more..
+Quota: You can create a maximum total of 150 accesses. Adding more accesses will result in an error. Learn more..
+Allow access to your account to another user. Alternatively you can create different multiple accesses to your own account using different ACLs.
+
+Request parameters
+email	Optional String	Email address of the invited users. Can be left empty to create a new access to your own account.
+acl_id	Integer	References an access control list controlling this access.
+description	String	A description that helps you remember why this access exists.
+expire	Optional Integer	A unix timestamp marking the expiration date of this access. If absent or set to 0, the access will not expire.
+Response
+.ok	true	The request was successful.
+.access_id	Integer	The access id created. If you left email empty, you'll have a new share with a new API key. If you invited another user, they'll have to join the access before they can use it.
+List access
+GET https://info-beamer.com/api/v1/access/list
+Permissions: Triggers action access:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action access:list at a sustained rate of 20 actions per minute (that's a rate of one call every 3 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Lists all the accesses you created. An access describes a relationship between two info-beamer accounts. This list allows you to see who can access your account. To see which accounts you can access, check out the list shares call.
+
+Response
+.access[]	A list of Access Objects
+Access Object
+.id	Integer	The access id
+.accessor.email	String	Email address of accessing account.
+.accessor.is_you	Boolean	If this access is for your own account.
+.accessor.icon	String	Url to a thumbnail of the accessing account. 64x64 pixels.
+.accessor.app	Optional object	Non-null if this access was created as a result of a successful Oauth authorizing request by a third-party app.
+.accessor.app.name	String	App name.
+.accessor.app.email	String	App owner.
+.accessor.app.icon	String	Url to a thumbnail icon for the app. 64x64 pixels.
+.accessor.app.url	String	A public url with more information about this app.
+.acl.id	Integer	The ACL effective for this access.
+.acl.name	String	Name of the ACL.
+.created	Integer	Unix timestamp of when the access was created.
+.joined	Integer/Null	Unix timestamp of when the invited account joined this access. If null, the invited user hasn't joined yet.
+.expires	Integer/Null	Unix timestamp when the access expires. If null, this access does not expire.
+.is_expired	Boolean	If the access is expired.
+.description	String	Description provided when creating this access.
+.managed	Boolean	System managed access?
+Update access
+POST https://info-beamer.com/api/v1/access/<access_id>
+Request parameters
+description	Optional String	A new description.
+acl_id	Optional Integer	If provided, updates the ACL used by this access.
+expire	Optional Integer	If provided, the Unix timestamp sets a new expiration time. Use 0 to remove the expiration.
+api_key	Optional String	Must be empty. If provided, will renew the API key for this access.
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action access:update:description with 6 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action access:update:acl-id with 6 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action access:update:expire with 6 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action access:renew-api-key with 5 request context variables available in addition to the default variables. Click to learn more..
+Response
+.ok	true	The request was successful. The access has been updated and is immediately effective.
+Delete access
+DELETE https://info-beamer.com/api/v1/access/<access_id>
+Response
+.ok	true	The request was successful. The access has been removed and access to your account using this access is immediately prevented.
+Shares
+List shares
+GET https://info-beamer.com/api/v1/shared/list
+Permissions: Triggers action shared:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action shared:list at a sustained rate of 20 actions per minute (that's a rate of one call every 3 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Lists all the accesses you can use. An access describes a relationship between two info-beamer accounts. This list allows you to see which accounts you have access to. To see which other accounts can access your account, check out the list access call.
+
+Response
+.shared[]	A list of Share Objects
+Share Object
+.id	Integer	The access id
+.sharer.email	String	Email address of sharing account.
+.sharer.is_you	Boolean	If this share is for your own account.
+.sharer.icon	String	Url to a thumbnail of the sharing account. 64x64 pixels.
+.api_key	String	API key for using accessing the shared account.
+.compromised	Boolean	True if the API key in questions was used in an insecure way.
+.created	Integer	Unix timestamp of when the access was created.
+.joined	Integer/Null	Unix timestamp of when you joined this access. If null, you haven't joined yet.
+.expires	Integer/Null	Unix timestamp when the access expires. If null, this access does not expire.
+.is_expired	Boolean	If the access is expired.
+.description	String/Null	Description provided when creating this access. This value is null for all shares for other accounts (so if sharer.is_you == false)
+.can_leave	Boolean	Can you leave this share?
+Join share
+POST https://info-beamer.com/api/v1/shared/<access_id>/join
+Permissions: Triggers action shared:join with 3 request context variables available in addition to the default variables. Click to learn more..
+If a share isn't joined yet, you can do so using this API call.
+
+Response
+.ok	true	The request was successful. You can now access this account through the dashboard or using the API key returned in the list shares call.
+Renew API key
+POST https://info-beamer.com/api/v1/shared/<access_id>
+Permissions: Triggers action shared:renew-api-key with 3 request context variables available in addition to the default variables. Click to learn more..
+Renew the API key for a share. This will also immediately invalidate all sessions for the subject's user account. If this call is issued from a session based API key, this one session based API key remains valid.
+
+Request parameters
+api_key	String	Must be empty.
+Response
+.ok	true	The request was successful. The API key has been renewed.
+Leave share
+DELETE https://info-beamer.com/api/v1/shared/<access_id>
+Permissions: Triggers action shared:leave with 3 request context variables available in addition to the default variables. Click to learn more..
+Leaves a share. You'll now longer have access the the shared account. You can also leave an unjoined share. In this case you won't be able to join later.
+
+Response
+.ok	true	The request was successful. The associated API key for this share is no longer valid and you cannot access the shared account.
+ACLs
+ACLs (access control lists) group policies. You can then use an ACL to control which actions an access is allowed to perform in your account.
+
+Create ACL
+POST https://info-beamer.com/api/v1/acl/create
+Permissions: Triggers action acl:create with 1 request context variables available in addition to the default variables. Click to learn more..
+Quota: You can create a maximum total of 500 acls. Adding more acls will result in an error. Learn more..
+Request parameters
+name	String	ACL name.
+policy_ids	String	Comma separated list of policy_ids.
+Response
+.ok	true	The request was successful.
+.acl_id	Integer	The id of the newly created ACL.
+List ACLs
+GET https://info-beamer.com/api/v1/acl/list
+Permissions: Triggers action acl:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action acl:list at a sustained rate of 30 actions per minute (that's a rate of one call every 2 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Lists all the ACL usable by your account.
+
+Response
+.acls[]	A list of ACL Objects
+ACL Object
+.id	Integer	The ACL id
+.managed	Boolean	If this is a managed ACL. Managed ACLs cannot be edited or deleted.
+.created	Integer	Unix timestamp of when the ACL was created.
+.description	String	Name of the ACL.
+.policy_ids[]	List of Integers	Assigned policies.
+.used	Integer	How often this policy is used in in your accesses.
+Update ACL
+POST https://info-beamer.com/api/v1/acl/<acl_id>
+You can update any ACL that isn't managed.
+
+Request parameters
+name	Optional String	A new name.
+policy_ids	Optional String	If provided, updates the assigned policies. The values must be a list of comma separated policy_ids.
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action acl:update:name with 3 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action acl:update:policy-ids with 2 request context variables available in addition to the default variables. Click to learn more..
+Response
+.ok	true	The request was successful. The ACL has been updated and is immediately effective.
+Delete ACL
+DELETE https://info-beamer.com/api/v1/acl/<acl_id>
+Permissions: Triggers action acl:delete with 2 request context variables available in addition to the default variables. Click to learn more..
+You can only delete an ACL if it's not used in any access. Managed ACLs cannot be deleted.
+
+Response
+.ok	true	The request was successful. The ACL has been deleted.
+Policies
+Policies are the center of the permission system. They describe which actions are allowed or denied based on certain conditions. info-beamer provides some policies by default but allows you to build your own policies if you want to.
+
+Create Policy
+POST https://info-beamer.com/api/v1/policy/create
+Permissions: Triggers action policy:create with 1 request context variables available in addition to the default variables. Click to learn more..
+Request parameters
+name	String	Name of the new policy.
+policy	JSON	The json policy document.
+Response
+.ok	true	The request was successful.
+.policy_id	Integer	The policy id created.
+List policies
+GET https://info-beamer.com/api/v1/policy/list
+Permissions: Triggers action policy:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action policy:list at a sustained rate of 30 actions per minute (that's a rate of one call every 2 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Lists all the policies usable by your account.
+
+Response
+.policies[]	A list of Policy Objects
+Policy Object
+.id	Integer	The policy id
+.managed	Boolean	If this is a managed policy. Managed policies cannot be edited or deleted.
+.created	Integer	Unix timestamp of when the policy was created.
+.name	String	Name of the policy.
+.oauth_scope	Null or String	If non-null, this policy can be requested using the given Oauth2 scope value during Oauth authorization.
+.policy	Object	The policy document.
+.used	Integer	How often this policy is used in in your ACLs.
+Update policy
+POST https://info-beamer.com/api/v1/policy/<policy_id>
+You can update any policy that isn't managed.
+
+Request parameters
+name	Optional String	If provided, a new policy name.
+policy	Optional JSON	If provided, a new json policy document.
+Depending on which request parameters are set, the following policy actions are triggered:
+
+Permissions: Triggers action policy:update:name with 3 request context variables available in addition to the default variables. Click to learn more..
+Permissions: Triggers action policy:update:policy with 2 request context variables available in addition to the default variables. Click to learn more..
+Response
+.ok	true	The request was successful. The policy has been updated and is immediately effective.
+Delete policy
+DELETE https://info-beamer.com/api/v1/policy/<policy_id>
+Permissions: Triggers action policy:delete with 2 request context variables available in addition to the default variables. Click to learn more..
+You can only delete a policy if it's not used in any ACL. Managed policies cannot be deleted.
+
+Response
+.ok	true	The request was successful. The policy has been deleted.
+SSH keys
+SSH keys are used to authenticate git pull based package synchronization. An example would be a package within a private repository on github. You can create a custom SSH key on info-beamer.com and specify that as a usable deploy key on github.
+
+Create SSH key
+POST https://info-beamer.com/api/v1/ssh/create
+Permissions: Triggers action ssh-key:create with 1 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action ssh-key:create at a sustained rate of 3 actions per minute (that's a rate of one call every 20 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Quota: You can create a maximum total of 50 ssh keys. Adding more ssh keys will result in an error. Learn more..
+Request parameters
+description	String	SSH key description.
+Response
+.ok	true	The request was successful.
+.ssh_key_id	Integer	The id of the newly created SSH key.
+.info	SSH Key Info Object	Information about the created key.
+SSH Key Info Object
+This object describes an SSH key used for git pull based package synchronization.
+
+.id	Integer	The SSH key id.
+.description	String	The used provided description of this key.
+.fingerprint	String	The fingerprint of the SSH key.
+.public_key	String	The public key component of the SSH key. This can be added to the authorized_keys for for custom SSH target or as deploy key on various git hosting services.
+List SSH keys
+This call returns all SSH keys created within an account.
+
+GET https://info-beamer.com/api/v1/ssh/list
+Permissions: Triggers action ssh-key:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action ssh-key:list at a sustained rate of 20 actions per minute (that's a rate of one call every 3 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Response
+.ssh_keys	List of SSH key Info Objects
+Delete SSH key
+DELETE https://info-beamer.com/api/v1/ssh/<ssh_key_id>
+Permissions: Triggers action ssh-key:delete with 1 request context variables available in addition to the default variables. Click to learn more..
+This will delete an SSH key. Packages using this SSH key will revert to using the default fallback SSH key shared across all customers.
+
+Response
+.ok	true	The request was successful. The SSH key has been deleted.
+Sessions
+The API keys on the account access page provide long living API keys: They don't expire (at least by default) and if you have access to an API key, no further authentication is required.
+
+Those API keys are great if you want to automated info-beamer hosted from your own backend system. On the other hand, if you want to create your own user web interface and want to log in info-beamer users, API keys can't be used. info-beamer hosted offers the sessions feature for that use case. They can be created by providing either email and password, or can be created directly for any of your accesses. API requests issued by a session have the auth:access:is-session request context variable set to true.
+
+Create session by login
+POST https://info-beamer.com/api/v1/session/create/login
+This call is no longer supported. Use an OAuth based authentication flow instead.
+
+This API call doesn't require authentication. So you don't need to provide an API key. You have to provide email/password instead.
+
+The total number of concurrent sessions for a single account is limited to 64. Additional sessions will log out the oldest session. This includes dashboard sessions.
+
+This will create a logged in session for an account. The returned API key is essentially a temporary API key for that user. This allows you to create your own frontend where users can log into their info-beamer account. The API key can then be used to issue authenticated requests.
+
+The newly created session API key is bound to the 'main' access of your account. As a result, the returned temporary API key has complete access to the account.
+
+Request parameters
+email	String	Account email address.
+password	String	Account password.
+Response
+.api_key	String	A temporary API key with full access to the given account.
+Create session for access
+POST https://info-beamer.com/api/v1/session/create/access/<access_id>
+Permissions: Triggers action session:create with 3 request context variables available in addition to the default variables. Click to learn more..
+Be sure to properly restrict the access you create sessions for. Otherwise a session might be used to gain elevated privileges. See below.
+
+This API call cannot be called using a session based API key. This prevents a session from creating additional sessions.
+
+The total number of concurrent sessions for a single account is limited to 32. Additional sessions will log out the oldest session. This includes dashboard sessions.
+
+This call allows you to create a new session for any of the defined shares in your account. So you can either create a session for any of your self-accesses or for accounts shared with you by other users.
+
+If you want to allow this session:create action, be sure to prevent the access from using the shared:list call. Otherwise the session can request a list of API keys and can use those to get elevated access to the account.
+
+Response
+.api_key	String	A temporary API key with access according to the given share.
+Create adhoc access
+POST https://info-beamer.com/api/v1/adhoc/create
+Permissions: Triggers action adhoc:create with the default context variables. Click to learn more..
+Not strictly a session, but thematically this API call fits in with the other session functions. It allows you to create a temporary API key from an existing API key with a temporary json policy document attached to it that further restricts what the caller can do.
+
+The main use case for this is if you have a server-side app using the info-beamer API and you want to delegate calls like asset/upload to the user's browser. You could in theory do this by setting up a new access with a limited ACL attached to it, but that's complicated and required manual cleanup. Instead you can use this call to create an ephemeral API key with a single additional policy attached to it.
+
+For the use case above you would write a small policy document that only allows uploading to (for example) a single filename or type. You can then submit this policy json document and an expiration time to this API call. You'll get back a new ephemeral API key that is restricted according to the access's permissions (so you can never give out broader access that the key used to call this API) and the provided policy.
+
+It's highly recommended that you use a whitelist based approach for writing policies. The easiest way to do this is to only have Allow statements limited to the exact calls you want to allow. All actions not explicitly allowed will then be denied by default.
+
+Once created, the API key cannot be revoked other than renewing the API key for the access used to call adhoc/create.
+
+The policy document should prevent another call to adhoc:create. Otherwise the adhoc API key can be used to create additional keys forever until the original API key is renewed to deleted.
+
+Request parameters
+expire	Integer	The created API key will expire automatically after the provided number of seconds. Must be at least 1 and at most 3600 (1 hour).
+uses	Optional Integer	If provided, limits the number of uses for the generated API key. If omitted, the number is allowed maximum of 1024.
+policy	JSON	The json policy document.
+Response
+.api_key	String	An ephemeral API key with access to the calling account, limited by the provided policy.
+Session info
+GET https://info-beamer.com/api/v1/session
+Permissions: Triggers action session:detail with the default context variables. Click to learn more..
+Provides information about the calling API key.
+
+Response
+.email	String	Account email address.
+.is_session	Boolean	Returns true if the API key used is a session based API key.
+.access_id	Integer	Returns the access_id for the API key.
+Destroy session
+POST https://info-beamer.com/api/v1/session/destroy
+This API call can only be called using a session based API key. You cannot 'destroy' normal API keys using this call. For that, use the access/share APIs.
+
+Invalidates the current session based API key. Use this to log out a users in your own frontend.
+
+Response
+.ok	true	The request was successful. Session API key used to issue this API call has been invalidated.
+Licensing
+Certain offline plans as well as using the info-beamer pi standalone player software requires the use of a per-device license. A license is bound to the device's serial number and cannot be released once it as been assigned.
+
+For using license a with info-beamer pi, each license includes a textual license blob that must be saved on the device. That way info-beamer pi can detect it is properly licensed. See info-beamer pi licensing for more information on how that works.
+
+For info-beamer hosted, a new device you add to your account is automatically matched against your licenses using the device's serial. You can check the licensing status by looking at the .offline.licensed value in the device object response returned by both device list and device detail calls.
+
+Assign new license
+Licenses must be purchased in the info-beamer shop. They will be added to your account and will initially not be bound to a specific device. If you want to switch over a device of yours to an offline plan or want to run info-beamer pi, you'll have to assign a license to the physical hardware. The device's serial number is used for that. Assigning a license to a device is final and an assigned license cannot be revoked or reused. When automating license assignment, make sure the serial number provided is correct. For manual assignment you can use the License assignment UI on the dashboard.
+
+POST https://info-beamer.com/api/v1/license/create
+Permissions: Triggers action license:assign with 2 request context variables available in addition to the default variables. Click to learn more..
+Response
+.ok	true	The request was successful. The license has been created.
+.license	License Objects	Information about the created license.
+List licenses
+This call returns all licenses registered with the account.
+
+GET https://info-beamer.com/api/v1/license/list
+Permissions: Triggers action license:list with the default context variables. Click to learn more..
+Response
+.licenses[]	A list of License Objects
+License Object
+.lid	String	The license ID
+.created	Integer	Unix timestamp of when the license was created.
+.serial	String	The device's serial number.
+.device_type	String	Hardware type. Currently always "pi".
+.blobs	List of Strings	One or many license blobs that can be used to licensing the info-beamer pi player software. See info-beamer pi licensing for more information.
+List offline plans
+This call returns possible offline plans available for a device.
+
+GET https://info-beamer.com/api/v1/offline/list
+Permissions: Triggers action offline:list with the default context variables. Click to learn more..
+Response
+.plans	An object of available Offline Plan Objects
+Offline Plan Object
+.name	String	Name of the offline plan. Can be used to assign this plan to a device.
+.chargeable	Integer	Number of days a device will be charged after going offline.
+.max_offline	Integer	Number of days a device will continue to work after going offline. Once this number of days is reached, the device will show a black screen.
+.needs_license	Boolean	Indicates if this offline plan needs a dedicated offline license assigned to a device.
+.optimize	Boolean	Indicates that a device using this offline plans implements extra offline optimizations like redundant storage of assigned content.
+.selectable	Boolean	Indicates if this plan can be assigned to devices. If changes are made to offline plans, they might no longer be available but still assigned to a device. Only plans with this value set to true can be assigned.
+.suspendable	Boolean	The device can be suspended. It will no longer be billed but also won't show its content.
+.reboot.first	Integer	Number of offline days after the device first begins rebooting.
+.reboot.interval	Integer	Reboot interval in hours once the device has been offline for .reboot.first days.
+OS
+Fetching information about OS releases and generating customized OS versions is fully API automated.
+
+OS release information
+GET https://info-beamer.com/api/v1/os/channels
+This API call doesn't require authentication
+
+This will return information about available info-beamer OS release channels and their current OS versions.
+
+Response
+.<channel_name>	Channel Info Object	Information about a release channel
+Channel Info Object
+.channel	String	Channel name.
+.created	Integer	Unix timestamp of when this release was created.
+.version	String	Internal version number of the release. Sortable
+.tag	String	OS Release Tag. Something like stable-XXXX. Sortable
+.install.zip	Object	Download Info Object
+.install.img.gz	Object	Download Info Object
+Download Info Object
+.hash	Optional String	SHA1 hash of the downloadable file.
+.size	Optional Integer	Size of the downloadable file.
+.url	String	Url where the file can be retrieved without authentication.
+.customizable	Boolean	Whether or not this download can be customized with the OS customized download API. Since OS release 11, both install.zip and install.img.gz downloads can be customized.
+OS download
+GET https://info-beamer.com/api/v1/os/download/<channel>/<filename>
+This API call doesn't require authentication
+
+This will redirect towards an url of the requested OS version and format. <channel> is one of the channels returned in the OS release information API. So far it's stable, testing and bleeding.
+
+Two download formats are available with the following filenames:
+
+install.zip	A normal ZIP file that can be directly extracted to an empty SD card.
+install.img.gz	A gzip compress raw disk image that can be directly written to a block device. This is mainly useful for Compute Module installation where no user accessible SD card is available.
+Response
+The response is a 302 redirect towards the downloadable OS installation file.
+
+OS customized download
+POST https://info-beamer.com/api/v1/os/customize
+Permissions: Triggers action download:customize with 3 request context variables available in addition to the default variables. Click to learn more..
+Rate limited: You can trigger API action download:customize at a sustained rate of 6 actions per minute (that's a rate of one call every 10 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Creates a customized install.zip file or install.img.gz image with additional configuration settings or other added files. This allows you to programmatically create installation files with preset configuration values. This avoids any manual and thus potentially error-prone steps when creating install files and can be, for example, integrated into a custom end user facing dashboard to create branded downloads on demand.
+
+When using the install.zip methods, added files are directly included in the generated zip file.
+
+When using the install.img.gz method, a custom concatenated gzip compressed file is returned. Most imaging programs should be able to support the resulting install.img.gz file. It has been tested with RPI imager. When writing the image to the target storage device, the resulting file system will not yet include the added files. They will get applied once the device boots for the first time and you will see a [*] Applying customizations log output line during bootup and the device will reboot once during initial setup.
+
+Request parameters
+channel	String	The requested OS release channel. This is used as the template for the generated download. Must be one of the channels returned in the OS release information API call.
+filename	String	Template file for the download. Either install.zip or install.img.gz. Whether or not a download can be customized is indicated by the customizable value returned in the OS release information API call.
+connect	Optional String	If set to yes, the downloaded installation file will be configured so the device using this installation file will be automatically added the the account that made the API call. This is using the device connect mechanism.
+install_id	Optional String	If you set connect, you can also provide an alpha-numeric install_id string value with a maximum length of 32 characters. This value will be passed through when registering the device and will end up in the install_id userdata field for the device.
+/config/<filename>	Optional String	You can set the content of additional files in the /config directory of the generated download. Only files within /config can be added. The maximum total size of all files added is 1MB. So you can't add a big branding.mp4 or branding.jpg that way.
+Response
+.channel	String	The requested channel
+.version	String	OS version used as the template for this download.
+.download_url	String	The url of the generated download. It doesn't need authentication. You should not share the generated download url as the generated OS download might contain sensitive information like set WiFi passwords or your device connect key. The download uses chunked encoding, as the exact size isn't known beforehand.
+.expires	Integer	The unix timestamp of when the generated download expires. Right now a download is valid for around 5 minutes.
+Checks
+Check calls are meant to be used from automated monitoring systems like nagios or web based monitoring systems like pingdom or uptimerobot. They will return a HTTP status depending on conditions you can set.
+
+The downside of monitoring your devices using this API is that you're implicitly also monitoring info-beamer hosted uptime. This is of course fine but means that your monitoring system will also trigger if info-beamer hosted itself is down or is temporarily returning errors. It's therefore recommended that you don't trigger an error immediately upon detecting a problem but instead try to confirm it using repeated tests. Most services offer this feature.
+
+Never use an API key with full access for calling any of these API calls from your monitoring system as this would allow the monitoring system to completely control everything in your account. Instead create a new limited API key that is restricted to 'check:*' actions.
+
+You can use the Monitoring access ACL for that. Create a new self-access on your permissions page and apply the ACL named Monitoring access. Then use the resulting API key to call the check API.
+
+Devices Check
+GET https://info-beamer.com/api/v1/check/devices
+HEAD https://info-beamer.com/api/v1/check/devices
+Permissions: Triggers action check:devices with the default context variables. Click to learn more..
+Filters: The returned result can be filtered. Click to learn more..
+You can decide which of your devices to check and the conditions that trigger an error. As an example you might filter by location to only include devices with a location name starting with HQ/ and check if any of them has been down for more than 10 minutes using the url parameters:
+
+https://info-beamer.com/api/v1/check/devices?filter:location=HQ/*&check:offline=600
+The calls needs to be authenticated. The easiest way is to add an API key to the url by appending &api-key=<THE-API-KEY>. Be sure to read the warning above regarding API key usage.
+
+Request parameters
+filter:id	Integer	Only checks the single device with the provided id.
+filter:serial	String	Checks all devices with the given serial number.
+filter:location	String	If set, only checks devices with a location name matching the provided pattern. You can use glob style patterns. This means you can use `*` as a wildcard character like in `Building A/*`.
+filter:description	String	If set, only checks devices with a description matching the provided pattern. You can use glob style patterns.
+check:offline	Number	If set, provide the number of seconds after which a device is considered offline. A good number is 300, so 5 minutes. Settings this value too low (<120 seconds) might trigger a lot of false alarms.
+check:maintenance	String	If set to any, devices with a Maintenance flags will be considered faulty.
+You need to set at provide at least one of the check: arguments.
+
+Response
+Returns a textual response describing the current status. If and only if all filtered devices don't trigger any of the checks, the response is guaranteed to include the string STATUS: OK and will have the HTTP response status 200.
+
+Any error conditions will include the string STATUS: ERROR and return a non-200 HTTP response status. The following error conditions exist at the moment:
+
+Your filters returned an empty list of devices.
+Any of the filtered devices is either offline or has a maintenance problem. This is detected using the check: arguments.
+Your account balance is negative and your devices are showing a black screen.
+A response might look like this:
+
+STATUS: ERROR
+
+Filtering:
+  Matching devices: 3/3
+
+Errors:
+  Devices with checked errors: 1/3
+  Maintenance: 1 devices ids: 28
+Misc
+List Timezones
+GET https://info-beamer.com/api/v1/timezone/list
+Permissions: Triggers action timezone:list with the default context variables. Click to learn more..
+Rate limited: You can trigger API action timezone:list at a sustained rate of 15 actions per minute (that's a rate of one call every 4 seconds). Excessive calls will return a HTTP 429 response. Learn more..
+Requests list of valid timezones.
+
+Response
+.timezones[]	List of timezones
+Userdata
+Userdata allows you to assign custom information to a device, setup, package or asset. This information is returned in the list or detail calls. Userdata can be any object. The maximum allows size is 2KB at the moment.
+
+Userdata assigned that way is intended to be used to make your API interactions easier as you can store metadata from your API consuming service.
+
+The userdata stored never ends up on your devices and is only used by the API and permission system.
+
+Thumbnail urls
+Various API responses include thumbnail urls. These urls point to a webservice that provides thumbnails for assets/packages and more.
+
+A thumbnail url is valid for as least 30 hours. The response to a thumbnail url request (not the url itself) can be cached indefinitely as it is immutable. This is also reflected in the HTTP response header. Of course if the underlaying resource changes - like the package.png file of a package or the image file for an asset - the thumbnail url changes. In that case the original call for asset/package or setup details will return a different url.
+
+Thumbnails are returned in the PNG format, so they can include transparency from the original asset. By default, returned images are at most 64x64 pixels.
+
+Urls returned from the API don't include url parameters, so you can always append your own parameters starting with a ?. You can specify different dimensions through parameters. You can also use different cropping strategies for a thumbnail. See the following table for all available urls parameters. The thumbnail service can ignore those parameters so you should always enforce the intended size using (for example) CSS rules.
+
+crop=default	default option enforces the given output size and adds transparent space to fill the image. If no crop parameter is given, this is the default.
+crop=smart	Selects smart cropping. This enforces the given output size but might zoom in to 'interesting' areas of the image.
+crop=none	Disables cropping. none means no cropping happens. The size of the image is limited by the width/height or size parameter.
+size=<size>	The size must be given in pixels. The resulting thumbnail will be at most <size>x<size> pixels. <size> can be any value between 10 and 512 inclusive.
+width=<size>	Can be used to select the maximum width. This parameter takes precedence of the size given by the size parameter. The same max/min limits apply.
+height=<size>	Can be used to select the maximum height. This parameter takes precedence of the size given by the size parameter. The same max/min limits apply.
+An example thumb url might look like this:
+
+https://cdn.infobeamer.com/<imagepath>?crop=smart&size=100
