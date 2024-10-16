@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Management</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <h1>Devices</h1>
+    <table id="devices-table" border="1">
+        <thead>
+            <tr>
+                <th>Device ID</th>
+                <th>Device Name</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Devices will be populated here via JavaScript -->
+        </tbody>
+    </table>
+
+    <script>
+        // Fetch devices and populate the table
+        function fetchDevices() {
+            $.ajax({
+                url: '/devices',
+                type: 'GET',
+                success: function(devices) {
+                    const tableBody = $('#devices-table tbody');
+                    tableBody.empty();  // Clear any existing rows
+
+                    devices.forEach(device => {
+                        const row = `
+                            <tr>
+                                <td>${device.id}</td>
+                                <td>${device.name}</td>
+                                <td>${device.status}</td>
+                                <td><button onclick="restartDevice('${device.id}')">Restart</button></td>
+                            </tr>
+                        `;
+                        tableBody.append(row);
+                    });
+                },
+                error: function(error) {
+                    alert('Failed to fetch devices');
+                    console.log(error);
+                }
+            });
+        }
+
+        // Restart a specific device
+        function restartDevice(deviceId) {
+            $.ajax({
+                url: `/restart_device/${deviceId}`,
+                type: 'POST',
+                success: function(response) {
+                    alert(response.message);
+                },
+                error: function(error) {
+                    alert('Failed to restart device');
+                    console.log(error);
+                }
+            });
+        }
+
+        // Fetch devices when the page loads
+        $(document).ready(function() {
+            fetchDevices();
+        });
+    </script>
+</body>
+</html>
+
